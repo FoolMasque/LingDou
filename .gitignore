@@ -3,3 +3,10 @@
 /lib/
 /rag_storage_furniture/
 /simple-rag-system/
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE config
+.idea/
+*.iml
