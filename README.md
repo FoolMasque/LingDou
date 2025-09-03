@@ -145,7 +145,8 @@ vim config.json
 python api/server.py
 
 # 生产模式
-gunicorn api.server:app -w 4 -k uvicorn.workers.UvicornWorker
+#gunicorn api.server:app -w 4 -k uvicorn.workers.UvicornWorker
+deploy.sh
 ```
 
 ### 基本使用
