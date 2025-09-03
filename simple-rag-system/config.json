@@ -3,9 +3,9 @@
         "provider": "openai",
         "api_key": "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",
         "base_url": "https://open.bigmodel.cn/api/paas/v4/",
-        "llm_model": "glm-4-flash",
-        "vision_model": "glm-4v-flash",
-        "embedding_model": "embedding-3",
+        "llm_model": "glm-4.5v",
+        "vision_model": "glm-4.5v",
+        "embedding_model": "embedding-2",
         "embedding_dim": 2048
     }
 }

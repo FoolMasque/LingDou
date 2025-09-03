@@ -496,7 +496,7 @@ async def main():
     await system.process_crawler_data("furniture", "mosyy_goods.json")
 
     # 3. 测试查询
-    result = await system.query("furniture", "茶桌")
+    result = await system.query("furniture", "石床")
     print("查询结果:")
     print(result)
 
