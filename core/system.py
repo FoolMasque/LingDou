@@ -4,6 +4,7 @@
 """
 import asyncio
 from typing import Dict, Any, List
+from pathlib import Path
 import json
 import aiofiles
 from config.settings import settings
@@ -127,19 +128,20 @@ class ProductionCoreSystem:
                 self._update_item_with_mappings(item, image_mappings)
 
                 # 构建多模态内容
-                modal_content = processor.build_modal_content(item)
+                modal_content = processor.build_modal_content(item, image_manager=self.image_manager)
 
                 # 验证多模态内容
                 img_path_dict = modal_content.get("img_path", {})
                 image_count = len([p for p in img_path_dict.values() if p])
 
-                logger.info(f"处理商品 [{index + 1}]: {entity_name}, 包含 {image_count} 张图片")
+                logger.info(f"处理商品 [{index + 1}]: {entity_name}, 唯一图片 {image_count} 张")
 
                 # 处理多模态内容
                 await rag.process_multimodal_content(
                     modal_content=modal_content,
                     entity_name=entity_name,
-                    file_path=f"{business_id}_{index}.json"
+                    file_path=f"{business_id}_{index}.json",
+                    image_manager=self.image_manager
                 )
 
                 logger.info(f"处理完成 [{index + 1}]: {entity_name}")
@@ -174,48 +176,51 @@ class ProductionCoreSystem:
         return list(all_urls)
 
     def _update_item_with_mappings(self, item: Dict[str, Any],
-                                   image_mappings: Dict[str, ImageMapping]):
-
-        """使用映射信息更新item中的所有URL"""
-        # 更新封面图
+                                         image_mappings: Dict[str, ImageMapping]):
+        """
+        更新item映射
+        保留原始URL用于后续查找
+        """
+        # 处理封面图
         if item.get("cover_pic") and item["cover_pic"] in image_mappings:
             mapping = image_mappings[item["cover_pic"]]
             item["cover_pic_original"] = item["cover_pic"]  # 保存原始URL
-            item["cover_pic"] = mapping.local_path  # 使用本地路径进行处理
-            item["cover_pic_remote"] = mapping.remote_url  # 保存远程URL
+            item["cover_pic"] = mapping.local_path
+            item["cover_pic_remote"] = mapping.remote_url
+            logger.debug(f"映射封面图: {item['cover_pic_original'][-30:]} -> {Path(mapping.local_path).name}")
 
-        # 【修复】更新详情图片 - 支持列表和字符串
+        # 处理详情图片
         detail_images = item.get("detail_images")
         if detail_images:
             if isinstance(detail_images, list):
-                # 处理图片列表
                 updated_images = []
                 remote_images = []
                 original_images = []
 
-                for img_url in detail_images:
-                    if img_url and isinstance(img_url, str) and img_url in image_mappings:
+                for i, img_url in enumerate(detail_images):
+                    if img_url and img_url in image_mappings:
                         mapping = image_mappings[img_url]
                         updated_images.append(mapping.local_path)
                         remote_images.append(mapping.remote_url)
                         original_images.append(img_url)
+                        logger.debug(f"映射详情图{i}: {img_url[-30:]} -> {Path(mapping.local_path).name}")
                     else:
-                        # 没有找到映射的情况
+                        # 保持原样
                         updated_images.append(img_url)
                         remote_images.append(img_url)
                         original_images.append(img_url)
+                        if img_url:
+                            logger.warning(f"详情图{i}无映射: {img_url[-30:]}")
 
+                item["detail_images_original"] = original_images  # 关键：保存原始URL列表
                 item["detail_images"] = updated_images
                 item["detail_images_remote"] = remote_images
-                item["detail_images_original"] = original_images
 
             elif isinstance(detail_images, str) and detail_images in image_mappings:
-                # 处理单个图片字符串
                 mapping = image_mappings[detail_images]
                 item["detail_images_original"] = detail_images
                 item["detail_images"] = mapping.local_path
                 item["detail_images_remote"] = mapping.remote_url
-
 
     async def query(self, business_id: str, query: str, mode: str = "hybrid") -> str:
         """查询接口"""

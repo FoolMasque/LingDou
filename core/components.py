@@ -3,6 +3,7 @@
 核心组件
 """
 import base64
+import logging
 import os
 import aiohttp
 import asyncio
@@ -235,71 +236,81 @@ class MultiModalProcessor:
     def __init__(self, business_id: str):
         self.business_id = business_id
 
-    def build_modal_content0(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """构建多模态内容"""
-        # 构建图片路径信息
-        img_path = {}
-        if item.get("cover_pic"):
-            img_path["cover_pic"] = item["cover_pic"]
-
-        # 详情图片 - 修复：支持多张详情图片
-        detail_images = item.get("detail_images", [])
-        if detail_images and isinstance(detail_images, list):
-            # 为每张详情图片创建单独的条目
-            for i, img_url in enumerate(detail_images):
-                img_path[f"detail_image_{i}"] = img_url
-
-        # 构建图片说明
-        img_caption = self._build_caption(item)
-
-        return {
-            "img_path": img_path,
-            "img_caption": [img_caption] if img_caption else [],
-            "img_footnote": []
-        }
-
     def build_modal_content(self, item: Dict[str, Any],
-                            image_manager: ImageManager = None) -> Dict[str, Any]:
-        """构建多模态内容（基于内容哈希去重）"""
-        # 构建图片路径信息
+                                  image_manager: ImageManager = None) -> Dict[str, Any]:
+        """
+        构建多模态内容
+        处理URL映射和内容去重
+        """
         img_path = {}
+        processed_hashes = set()
+        processed_urls = set()
+
+        # 收集所有图片信息（使用原始URL）
         all_images = []
 
-        # 收集所有图片
-        if item.get("cover_pic"):
-            all_images.append(("cover_pic", item["cover_pic"]))
+        # 使用原始URL字段
+        cover_pic_url = item.get("cover_pic_original") or item.get("cover_pic")
+        if cover_pic_url:
+            all_images.append(("cover_pic", cover_pic_url))
 
-        # 详情图片
-        detail_images = item.get("detail_images", [])
-        if detail_images and isinstance(detail_images, list):
-            for i, img_url in enumerate(detail_images):
-                if img_url:
-                    all_images.append((f"detail_image_{i}", img_url))
+        # 详情图片 - 同样使用原始URL
+        detail_images_urls = item.get("detail_images_original") or item.get("detail_images", [])
+        if detail_images_urls:
+            if isinstance(detail_images_urls, list):
+                for i, img_url in enumerate(detail_images_urls):
+                    if img_url:
+                        all_images.append((f"detail_image_{i}", img_url))
+            elif isinstance(detail_images_urls, str):
+                all_images.append(("detail_image_0", detail_images_urls))
 
-        # 基于内容哈希去重
-        if image_manager:
-            seen_hashes = set()
-            for img_key, img_url in all_images:
-                mapping = image_manager.get_mapping(img_url)
+        logger.debug(f"收集到 {len(all_images)} 个图片位置")
+
+        # 基于内容和URL去重
+        for img_key, original_url in all_images:
+            # 先检查URL是否已处理
+            if original_url in processed_urls:
+                logger.debug(f"跳过重复URL: {img_key} -> {original_url[-30:]}")
+                continue
+
+            # 获取映射信息
+            if image_manager:
+                mapping = image_manager.get_mapping(original_url)
                 if mapping:
-                    if mapping.content_hash not in seen_hashes:
-                        seen_hashes.add(mapping.content_hash)
-                        # 使用本地路径
-                        img_path[img_key] = mapping.local_path
-                        logger.debug(f"添加唯一图片 {img_key}: hash={mapping.content_hash[:8]}")
-                    else:
-                        logger.debug(f"跳过内容重复图片 {img_key}: hash={mapping.content_hash[:8]}")
+                    # 基于内容哈希去重
+                    if mapping.content_hash:
+                        if mapping.content_hash in processed_hashes:
+                            logger.debug(f"跳过内容重复: {img_key}, hash={mapping.content_hash[:8]}")
+                            continue
+                        processed_hashes.add(mapping.content_hash)
+
+                    # 使用本地路径
+                    img_path[img_key] = mapping.local_path
+                    processed_urls.add(original_url)
+                    logger.debug(f"添加图片: {img_key} -> {Path(mapping.local_path).name}")
                 else:
-                    # 没有映射时保留原URL
-                    img_path[img_key] = img_url
-        else:
-            # 没有image_manager时，保留所有图片
-            for img_key, img_url in all_images:
-                img_path[img_key] = img_url
+                    logger.warning(f"未找到映射: {img_key} -> {original_url[-30:]}")
+                    # 降级：使用item中已有的本地路径
+                    if img_key == "cover_pic" and item.get("cover_pic"):
+                        img_path[img_key] = item["cover_pic"]
+                    elif img_key.startswith("detail_image_"):
+                        idx = int(img_key.split("_")[-1])
+                        detail_images = item.get("detail_images", [])
+                        if isinstance(detail_images, list) and idx < len(detail_images):
+                            img_path[img_key] = detail_images[idx]
+            else:
+                # 没有image_manager时，使用URL去重
+                if original_url not in processed_urls:
+                    img_path[img_key] = original_url
+                    processed_urls.add(original_url)
 
-        logger.info(f"商品图片去重: 原始 {len(all_images)} 张 -> 唯一 {len(img_path)} 张")
+        # 统计去重效果
+        original_count = len(all_images)
+        final_count = len(img_path)
+        if original_count != final_count:
+            logger.info(f"图片去重: {original_count} -> {final_count} 张 (去除 {original_count - final_count} 张重复)")
 
-        # 构建图片说明
+        # 构建最终内容
         img_caption = self._build_caption(item)
 
         return {

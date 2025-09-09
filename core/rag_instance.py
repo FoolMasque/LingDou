@@ -1,18 +1,16 @@
 # core/rag_instance.py
 """
-生产环境RAG实例
+生产环境RAG实例 - 移除ChinesePrompts依赖
 """
-import asyncio
 from pathlib import Path
 import json
-from typing import Dict, List, Any, Optional, Tuple, Iterable, Set
 import re
+from typing import Optional, Dict, Any, Set
 import openai
 from lightrag import QueryParam
 from config.settings import settings
-from config.prompts import ChinesePrompts
 from core.components import ImageOptimizer
-from utils.url_helper import post_process_response_urls, path_manager
+from utils.url_helper import post_process_response_urls
 from utils.logger import setup_logger
 from raganything.modalprocessors import ImageModalProcessor
 from lightrag import LightRAG
@@ -22,6 +20,23 @@ from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.openai import openai_embed
 
 logger = setup_logger(__name__)
+
+_global_openai_client = None
+
+
+async def get_shared_openai_client():
+    """获取共享的OpenAI客户端"""
+    global _global_openai_client
+
+    if _global_openai_client is None:
+        import openai
+        _global_openai_client = openai.AsyncOpenAI(
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            timeout=60.0
+        )
+
+    return _global_openai_client
 
 
 class ProductionRAGInstance:
@@ -57,6 +72,10 @@ class ProductionRAGInstance:
         logger.info(f"初始化RAG实例: {self.business_id}")
 
         try:
+            # 每次初始化时都应用中文提示词
+            from config.runtime_prompt_patch import apply_chinese_prompts_runtime
+            apply_chinese_prompts_runtime()
+
             # 创建LightRAG实例
             await self._create_lightrag()
 
@@ -71,67 +90,21 @@ class ProductionRAGInstance:
             raise
 
     async def _create_lightrag(self):
-        """创建LightRAG实例"""
+        """创建LightRAG实例 """
 
-        # 使用中文提示词的LightRAG配置
         self.lightrag_instance = LightRAG(
             working_dir=self.working_dir,
             embedding_func=self._get_embedding_func(),
-            llm_model_func=self._get_chinese_llm_func()
+            llm_model_func=self._get_llm_func()
         )
-
-        self._apply_chinese_prompts_to_lightrag()
 
         await self.lightrag_instance.initialize_storages()
         await initialize_pipeline_status()
 
         logger.info(f"LightRAG创建完成: {self.working_dir}")
 
-    def _apply_chinese_prompts_to_lightrag(self):
-        """将中文prompt应用到LightRAG实例"""
-        if not self.lightrag_instance:
-            return
-
-        # 直接覆盖LightRAG内部的提示词
-        try:
-            # 如果LightRAG有prompt配置属性，直接修改
-            if hasattr(self.lightrag_instance, 'llm_model_func'):
-
-                original_llm_func = self.lightrag_instance.llm_model_func
-
-                def chinese_wrapper_llm_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-                    # 强制使用中文系统提示词
-                    if not system_prompt or "entity" in prompt.lower():
-                        system_prompt = ChinesePrompts.ENTITY_EXTRACTION_SYSTEM
-                    elif "query" in prompt.lower() or "search" in prompt.lower():
-                        system_prompt = ChinesePrompts.QUERY_RESPONSE_SYSTEM
-
-                    return original_llm_func(
-                        prompt=prompt,
-                        system_prompt=system_prompt,
-                        history_messages=history_messages,
-                        **kwargs
-                    )
-
-                self.lightrag_instance.llm_model_func = chinese_wrapper_llm_func
-                logger.info("成功应用中文提示词到LightRAG")
-
-        except Exception as e:
-            logger.warning(f"应用中文提示词失败: {e}")
-
-    def _get_chinese_llm_func(self):
-        """中文LLM函数"""
-
-        def chinese_llm_func(prompt, system_prompt=None, history_messages=[], **kwargs):
-            # 使用中文系统提示词
-            if not system_prompt:
-                if "entity" in prompt.lower() or "extract" in prompt.lower():
-                    system_prompt = ChinesePrompts.ENTITY_EXTRACTION_SYSTEM
-                elif "query" in prompt.lower() or "search" in prompt.lower():
-                    system_prompt = ChinesePrompts.QUERY_RESPONSE_SYSTEM
-                else:
-                    system_prompt = ChinesePrompts.ENTITY_EXTRACTION_SYSTEM
-
+    def _get_llm_func(self):
+        def llm_func(prompt, system_prompt=None, history_messages=[], **kwargs):
             return openai_complete_if_cache(
                 model=settings.llm_model,
                 prompt=prompt,
@@ -142,8 +115,9 @@ class ProductionRAGInstance:
                 **kwargs
             )
 
-        return chinese_llm_func
+        return llm_func
 
+    # TODO：无法适配qwen的接口（测试免费版）
     def _get_embedding_func(self):
         """获取embedding函数"""
 
@@ -167,85 +141,343 @@ class ProductionRAGInstance:
 
         logger.info("图像处理器创建完成")
 
-    def _get_vision_func(self):
-        async def vision_model_func(
-                prompt,
-                system_prompt=None,
-                history_messages=[],
-                image_data=None,
-                **kwargs
-        ):
-            try:
+    def _get_simple_vision_func(self):
+        """待废弃：vision函数 - 依赖运行时替换的提示词，无法适配glm模型"""
 
-                # 统一使用异步OpenAI客户端
+        async def simple_vision_func(prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs):
+
+            try:
                 client = openai.AsyncOpenAI(
                     api_key=settings.api_key,
-                    base_url=settings.base_url
+                    base_url=settings.base_url,
+                    timeout=60.0
                 )
 
-                # 强制使用中文图像分析系统提示词
-                chinese_system_prompt = ChinesePrompts.IMAGE_ANALYSIS_SYSTEM
-
+                # 使用传入的system_prompt（已经在运行时被替换为中文）
                 messages = [
-                    {
-                        "role": "system",
-                        "content": chinese_system_prompt
-                    }
+                    {"role": "system", "content": system_prompt or "你是专业的家具分析师。"}
                 ]
-
-                # 添加历史消息
-                if history_messages:
-                    messages.extend(history_messages)
-
+                # logger.info(f"<UNK>提示词: {prompt[:50]}")
                 if image_data:
-                    if isinstance(image_data, str) and not image_data.startswith('data:'):
-                        # 如果是文件路径，读取并优化
-                        if Path(image_data).exists():
-                            logger.debug(f"优化本地图片: {image_data}")
-                            optimized_base64 = self.image_optimizer.get_base64_optimized(image_data)
-                            image_data = optimized_base64
-                        else:
-                            # 可能已经是base64
-                            pass
-                    # 有图片时的消息格式
                     messages.append({
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}
-                            }
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
                         ]
                     })
-
-                    model_to_use = settings.vision_model
+                    model = settings.vision_model
                 else:
-                    # 没有图片时的消息格式
-                    messages.append({
-                        "role": "user",
-                        "content": prompt
-                    })
-
-                    model_to_use = settings.llm_model
+                    messages.append({"role": "user", "content": prompt})
+                    model = settings.llm_model
 
                 try:
                     response = await client.chat.completions.create(
-                        model=model_to_use,
+                        model=model,
                         messages=messages,
+                        temperature=0,
+                        max_tokens=600,
                         **kwargs
                     )
                     result = response.choices[0].message.content
-                    logger.debug(f"中文Vision分析结果: {result[:100]}...")
+                    logger.info(f"<UNK>响应: {result}")
                     return result
                 finally:
                     await client.close()
 
             except Exception as e:
-                logger.error(f"中文Vision function error: {e}")
-                return f"图像处理出错: {str(e)}"
+                logger.error(f"Vision调用失败: {e}")
+                return f"分析失败: {str(e)}"
 
-        return vision_model_func
+        return simple_vision_func
+
+    def _get_vision_func(self):
+        """兼容多种模型格式的vision函数"""
+
+        async def multi_model_vision_func(prompt, system_prompt=None,
+                                          history_messages=[], image_data=None, **kwargs):
+
+            try:
+                client = openai.AsyncOpenAI(
+                    api_key=settings.api_key,
+                    base_url=settings.base_url,
+                    timeout=90.0
+                )
+
+                # 构建消息
+                messages = [
+                    {"role": "system", "content": system_prompt or "分析图片并返回JSON格式结果"},
+                ]
+
+                if image_data:
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                        ]
+                    })
+                    model = settings.vision_model
+                else:
+                    messages.append({"role": "user", "content": prompt})
+                    model = settings.llm_model
+
+                # 记录请求
+                logger.debug(f"发送Vision请求到模型: {model}")
+
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0.1,
+                        max_tokens=1000,
+                        # **kwargs
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "image_analysis",
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["detailed_description", "entity_info"],
+                                    "properties": {
+                                        "detailed_description": {"type": "string"},
+                                        "entity_info": {
+                                            "type": "object",
+                                            "required": ["entity_name", "entity_type", "summary"],
+                                            "properties": {
+                                                "entity_name": {"type": "string"},
+                                                "entity_type": {"type": "string"},
+                                                "summary": {"type": "string"}
+                                            },
+                                            "additionalProperties": True
+                                        }
+                                    },
+                                    "additionalProperties": False
+                                }
+                            }
+                        }
+                    )
+                    logger.info(f"Vision<UNK>: {response}")
+
+                    if response and response.choices:
+                        raw_content = response.choices[0].message.content
+                        logger.info(f"收到响应，长度: {len(raw_content) if raw_content else 0}")
+
+                        if raw_content:
+                            # 记录原始响应用于调试
+                            logger.debug(f"原始响应预览: {raw_content[:300]}...")
+
+                            # 使用智能解析器
+                            parsed = self._smart_parse_response(raw_content)
+
+                            if parsed:
+                                logger.info("响应解析成功")
+                                logger.info(f"响应输出{parsed}")
+                                return parsed
+                            else:
+                                logger.warning("响应解析失败，使用默认值")
+                                return self._create_default_response()
+                        else:
+                            logger.warning("响应内容为空")
+                            return self._create_default_response()
+                    else:
+                        logger.warning("无有效响应")
+                        return self._create_default_response()
+
+                finally:
+                    await client.close()
+
+            except Exception as e:
+                logger.error(f"Vision调用失败: {e}")
+                return self._create_default_response()
+
+        return multi_model_vision_func
+
+    def _smart_parse_response(self, response: str) -> Optional[str]:
+        """智能解析不同模型的响应格式"""
+
+        if not response or not response.strip():
+            return None
+
+        response = response.strip()
+
+        # 步骤1: 清理GLM特殊标记
+        if "<|begin_of_box|>" in response or "<|end_of_box|>" in response:
+            logger.debug("检测到GLM格式，清理特殊标记")
+            response = re.sub(r'<\|begin_of_box\|>', '', response)
+            response = re.sub(r'<\|end_of_box\|>', '', response)
+            response = response.strip()
+
+        # 步骤2: 清理OpenAI的markdown标记
+        if "```json" in response or "```" in response:
+            logger.debug("检测到markdown格式，提取JSON内容")
+            if "```json" in response:
+                parts = response.split("```json")
+                if len(parts) > 1:
+                    json_part = parts[1].split("```")[0]
+                    response = json_part.strip()
+            elif "```" in response:
+                parts = response.split("```")
+                if len(parts) > 1:
+                    response = parts[1].strip()
+
+        # 步骤3: 尝试直接解析JSON
+        try:
+            data = json.loads(response)
+            validated = self._validate_response_data(data)
+            if validated:
+                return json.dumps(validated, ensure_ascii=False)
+        except json.JSONDecodeError as e:
+            logger.debug(f"直接JSON解析失败: {e}")
+
+        # 步骤4: 尝试提取JSON对象
+        json_patterns = [
+            r'\{[^{}]*"detailed_description"[^{}]*:[^{}]*"[^"]*"[^{}]*\}(?:[^{}]*\{[^{}]*\}[^{}]*)*',
+            r'\{.*?"detailed_description".*?\}(?:.*?\{.*?\})*',
+            r'\{[^}]+\}',
+        ]
+
+        for pattern in json_patterns:
+            matches = re.findall(pattern, response, re.DOTALL)
+            for match in matches:
+                try:
+                    # 修复可能的JSON问题
+                    fixed = self._fix_json_issues(match)
+                    data = json.loads(fixed)
+                    validated = self._validate_response_data(data)
+                    if validated:
+                        return json.dumps(validated, ensure_ascii=False)
+                except:
+                    continue
+
+        # 步骤5: 尝试从片段构建JSON
+        desc = self._extract_description(response)
+        if desc:
+            return self._build_response_from_text(desc)
+
+        return None
+
+    def _fix_json_issues(self, json_str: str) -> str:
+        """修复常见的JSON格式问题"""
+
+        # 修复换行符
+        json_str = json_str.replace('\n', '\\n').replace('\r', '\\r')
+
+        # 修复未转义的引号
+        # 这里需要更智能的处理，避免破坏正常的JSON
+
+        # 修复未闭合的括号
+        open_braces = json_str.count('{')
+        close_braces = json_str.count('}')
+        if open_braces > close_braces:
+            json_str += '}' * (open_braces - close_braces)
+
+        # 修复尾部逗号
+        json_str = re.sub(r',\s*}', '}', json_str)
+        json_str = re.sub(r',\s*]', ']', json_str)
+
+        return json_str
+
+    def _extract_description(self, text: str) -> Optional[str]:
+        """从文本中提取描述内容"""
+
+        # 尝试提取detailed_description的值
+        patterns = [
+            r'"detailed_description"\s*:\s*"([^"]+)"',
+            r'detailed_description[:\s]+([^,}]+)',
+            r'"description"\s*:\s*"([^"]+)"',
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                desc = match.group(1).strip()
+                if desc and len(desc) > 5:
+                    return desc
+
+        # 如果找不到，但文本包含有用信息
+        if "家具" in text or "茶桌" in text or "床" in text or "材质" in text:
+            # 清理文本，提取有用部分
+            clean_text = re.sub(r'[{}\[\]":]', ' ', text)
+            clean_text = ' '.join(clean_text.split())
+            if len(clean_text) > 10:
+                return clean_text[:200]
+
+        return None
+
+    def _validate_response_data(self, data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """验证和修复响应数据"""
+
+        if not isinstance(data, dict):
+            return None
+
+        # 提取描述
+        desc = data.get("detailed_description", "").strip()
+
+        # 如果描述为空，尝试其他字段
+        if not desc or desc == "''":
+            alternatives = [
+                data.get("description", ""),
+                data.get("content", ""),
+                data.get("analysis", ""),
+                data.get("entity_info", {}).get("summary", ""),
+                data.get("entity_info", {}).get("description", ""),
+            ]
+
+            for alt in alternatives:
+                if alt and len(str(alt).strip()) > 5:
+                    desc = str(alt).strip()
+                    break
+
+        # 如果还是没有描述，返回None
+        if not desc or len(desc) < 5:
+            logger.warning(f"描述内容太短或为空: '{desc}'")
+            return None
+
+        # 构建完整的响应
+        result = {
+            "detailed_description": desc,
+            "entity_info": data.get("entity_info", {})
+        }
+
+        # 确保entity_info完整
+        if not result["entity_info"]:
+            result["entity_info"] = {}
+
+        if not result["entity_info"].get("entity_name"):
+            result["entity_info"]["entity_name"] = "产品图片"
+
+        if not result["entity_info"].get("entity_type"):
+            result["entity_info"]["entity_type"] = "image"
+
+        if not result["entity_info"].get("summary"):
+            result["entity_info"]["summary"] = desc[:100] if len(desc) > 100 else desc
+
+        return result
+
+    def _build_response_from_text(self, text: str) -> str:
+        """从文本构建响应"""
+
+        return json.dumps({
+            "detailed_description": text,
+            "entity_info": {
+                "entity_name": "产品图片",
+                "entity_type": "image",
+                "summary": text[:100] if len(text) > 100 else text
+            }
+        }, ensure_ascii=False)
+
+    def _create_default_response(self) -> str:
+        """创建默认响应"""
+
+        return json.dumps({
+            "detailed_description": "产品图片，展示产品的设计和材质特征",
+            "entity_info": {
+                "entity_name": "产品",
+                "entity_type": "image",
+                "summary": "产品展示"
+            }
+        }, ensure_ascii=False)
 
 
 
@@ -272,33 +504,49 @@ class ProductionRAGInstance:
             skipped_count = 0
 
             # 逐一处理每张图片（已经在build_modal_content中去重）
-            for img_key, img_path in img_path_dict.items():
-                if not img_path or not isinstance(img_path, str):
+            current_item_hashes = set()
+            for img_key, local_path in img_path_dict.items():
+                if not local_path or not isinstance(local_path, str):
                     continue
 
-                # 检查是否已处理过（基于内容哈希）
+                # 检查是否已处理（全局级别）
+                skip_reason = None
+
+                # 尝试通过本地路径反查映射信息
+                content_hash = None
                 if image_manager:
-                    mapping = image_manager.get_mapping(img_path)
-                    if mapping and mapping.content_hash:
-                        if mapping.content_hash in self.processed_content_hashes:
-                            skipped_count += 1
-                            logger.debug(f"跳过已处理内容: {img_key} (hash: {mapping.content_hash[:8]})")
-                            continue
-                        else:
-                            self.processed_content_hashes.add(mapping.content_hash)
+                    # 遍历所有映射找到对应的hash
+                    for orig_url, mapping in image_manager.mappings.items():
+                        if mapping.local_path == local_path:
+                            content_hash = mapping.content_hash
+                            break
 
-                logger.info(f"开始处理图片 - {entity_name} - {img_key}: {Path(img_path).name}")
+                if content_hash:
+                    # 检查全局是否已处理
+                    if content_hash in self.processed_content_hashes:
+                        skip_reason = f"全局已处理 (hash: {content_hash[:8]})"
+                    # 检查当前商品内是否已处理
+                    elif content_hash in current_item_hashes:
+                        skip_reason = f"商品内重复 (hash: {content_hash[:8]})"
+                    else:
+                        current_item_hashes.add(content_hash)
+                        self.processed_content_hashes.add(content_hash)
 
-                # 为每张图片创建单独的modal content
+                if skip_reason:
+                    skipped_count += 1
+                    logger.debug(f"跳过 {img_key}: {skip_reason}")
+                    continue
+
+                # 处理图片
+                logger.info(f"处理图片 [{entity_name}] {img_key}: {Path(local_path).name}")
+
                 single_image_content = {
-                    "img_path": img_path,  # 本地路径
+                    "img_path": local_path,
                     "img_caption": modal_content.get("img_caption", []),
                     "img_footnote": modal_content.get("img_footnote", [])
                 }
 
                 try:
-                    # ImageModalProcessor会调用我们的optimized_vision_func
-                    # 图片会在那里被压缩
                     result = await self.image_processor.process_multimodal_content(
                         modal_content=single_image_content,
                         content_type="image",
@@ -307,13 +555,13 @@ class ProductionRAGInstance:
                     )
 
                     if result:
+                        # logger.info(f"图片处理结果: {result}")
                         processed_count += 1
-                        logger.info(f"图片处理成功: {entity_name} - {img_key}")
+                        logger.info(f"图片处理成功: {img_key}")
 
                 except Exception as e:
-                    logger.error(f"处理图片{entity_name} -  {img_key} 失败: {e}")
+                    logger.error(f"处理失败 {img_key}: {e}")
                     continue
-
             logger.info(
                 f"商品处理完成: {entity_name}, 处理 {processed_count} 张，跳过 {skipped_count} 张（共 {total_images} 张）")
             return True
@@ -322,38 +570,6 @@ class ProductionRAGInstance:
             logger.error(f"多模态处理失败: {e}")
             await self._fallback_text_processing(modal_content, entity_name)
             return False
-
-    def _prepare_image_content_format(self, modal_content: Dict[str, Any],
-                                      entity_name: str, use_local_path: bool = True) -> Dict[str, Any]:
-        ## TODO:只处理了cover_pic
-        """
-        准备符合RAG-Anything格式的图像内容
-        use_local_path: True时使用本地路径(用于LLM处理)，False时使用远程URL(用于输出)
-        """
-        img_path = modal_content.get("img_path", {})
-
-        # 获取正确的路径
-        cover_pic = ""
-        if isinstance(img_path, dict):
-            cover_pic = img_path.get("cover_pic", "")
-        elif isinstance(img_path, str):
-            cover_pic = img_path
-
-        # 如果需要本地路径且当前是远程URL，则转换
-        if use_local_path and cover_pic.startswith("http"):
-            cover_pic = path_manager.get_local_path(cover_pic)
-        # 如果需要远程URL且当前是本地路径，则转换
-        elif not use_local_path and not cover_pic.startswith("http"):
-            cover_pic = path_manager.get_remote_url(cover_pic)
-
-        captions = modal_content.get("img_caption", [f"分析{self.business_id}产品: {entity_name}"])
-        footnotes = modal_content.get("img_footnote", [])
-
-        return {
-            "img_path": cover_pic,  # 根据需要使用本地或远程路径
-            "img_caption": captions,
-            "img_footnote": footnotes
-        }
 
     async def _fallback_text_processing(self, modal_content: Dict[str, Any], entity_name: str):
         """备用文本处理"""
@@ -398,15 +614,10 @@ class ProductionRAGInstance:
         logger.info(f"处理查询: {query}")
 
         try:
-
-            # 使用家具专用的中文查询提示词
-            chinese_query = ChinesePrompts.get_furniture_query_prompt(query)
-
             result = await self.lightrag_instance.aquery(
-                chinese_query,
+                query,  # 直接使用用户查询
                 param=QueryParam(mode=mode)
             )
-            logger.info(f"<UNK>: {result}")
 
             if result:
                 # 确保图片URL是远程访问格式

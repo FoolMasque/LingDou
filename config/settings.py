@@ -14,15 +14,15 @@ class SystemConfig:
     系统配置
     """
     # API配置
-    provider: str = "openai"
-    api_key: str = ""
-    base_url: str = ""
+    provider: str = "zhipu" #"openai"
+    api_key: str = "e06326b43c6e469e863ccbbb60f1ee6a.iBlzS0xRSXwoPnPF" #""
+    base_url: str = "https://open.bigmodel.cn/api/paas/v4" #""
 
     # 模型配置
-    llm_model: str = "gpt-4o-mini"
-    vision_model: str = "gpt-4o"
-    embedding_model: str = "text-embedding-3-large"
-    embedding_dim: int = 3072
+    llm_model: str = "glm-4" #"gpt-4o-mini"
+    vision_model: str = "glm-4v"# "gpt-4o"
+    embedding_model: str = "embedding-2"# "text-embedding-3-large"
+    embedding_dim: int = 1024 #3072
 
     # 服务配置
     host: str = "0.0.0.0"
@@ -55,9 +55,9 @@ class SystemConfig:
         "zhipu": {
             "base_url": "https://open.bigmodel.cn/api/paas/v4",
             "llm_model": "glm-4",
-            "vision_model": "glm-4v",
+            "vision_model": "glm-4.5v",
             "embedding_model": "embedding-2",
-            "embedding_dim": 2048
+            "embedding_dim": 1024
         },
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
@@ -65,6 +65,13 @@ class SystemConfig:
             "vision_model": "deepseek-vl",
             "embedding_model": "deepseek-embedding",
             "embedding_dim": 1536
+        },
+        "qwen": {
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "llm_model": "qwen3-14b",
+            "vision_model": "qwen2.5-vl-32b-instruct",
+            "embedding_model": "text-embedding-v4",
+            "embedding_dim": 1024
         }
     })
 

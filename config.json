@@ -1,6 +1,6 @@
 {
-    "provider": "openai",
-    "api_key": "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",
+    "provider": "qwen",
+    "api_key": "sk-d5526f7c41af44508fbd6e1c19f84966",
     "static_base_url": "http://localhost:8008",
     "use_chinese_prompts": true,
     "provider_configs": {
@@ -14,9 +14,9 @@
         "zhipu": {
             "base_url": "https://open.bigmodel.cn/api/paas/v4",
             "llm_model": "glm-4",
-            "vision_model": "glm-4v",
+            "vision_model": "glm-4.5v",
             "embedding_model": "embedding-2",
-            "embedding_dim": 2048
+            "embedding_dim": 1024
         },
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
@@ -24,6 +24,13 @@
             "vision_model": "deepseek-vl",
             "embedding_model": "deepseek-embedding",
             "embedding_dim": 1536
+        },
+        "qwen": {
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "llm_model": "qwen2.5-14b-instruct",
+            "vision_model": "qwen2.5-vl-32b-instruct",
+            "embedding_model": "text-embedding-v4",
+            "embedding_dim": 1024
         }
     }
 }

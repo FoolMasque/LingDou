@@ -79,8 +79,11 @@ if __name__ == "__main__":
     import os
 
     # 设置环境变量
-    os.environ['API_KEY'] = "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"
-    os.environ['LLM_PROVIDER'] = "openai"
+    # os.environ['API_KEY'] = "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"
+    # os.environ['LLM_PROVIDER'] = "openai"
+    os.environ[
+        'API_KEY'] = "e06326b43c6e469e863ccbbb60f1ee6a.iBlzS0xRSXwoPnPF"
+    os.environ['LLM_PROVIDER'] = "zhipu"
 
     # 运行异步测试
     asyncio.run(test_furniture_processing())
