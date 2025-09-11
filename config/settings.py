@@ -95,7 +95,7 @@ class SystemConfig:
         config = cls()
 
         # 1. 从config.json读取
-        config_file = Path("../config.json")
+        config_file = Path("./config.json")
         if config_file.exists():
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:

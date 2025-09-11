@@ -10,3 +10,4 @@ __pycache__/
 # IDE config
 .idea/
 *.iml
+deploy.log
