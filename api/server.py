@@ -3,7 +3,15 @@
 FastAPI服务器
 """
 import os
+import sys
 from pathlib import Path
+# 获取项目根目录但不改变工作目录
+current_file = Path(__file__).resolve()
+project_root = current_file.parent.parent
+
+# 只添加到Python路径，不改变工作目录
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI

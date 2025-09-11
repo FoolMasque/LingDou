@@ -14,27 +14,27 @@ class SystemConfig:
     系统配置
     """
     # API配置
-    provider: str = "zhipu" #"openai"
-    api_key: str = "e06326b43c6e469e863ccbbb60f1ee6a.iBlzS0xRSXwoPnPF" #""
-    base_url: str = "https://open.bigmodel.cn/api/paas/v4" #""
+    provider: str = "" #"openai"
+    api_key: str = "" #""
+    base_url: str = "" #""
 
     # 模型配置
-    llm_model: str = "glm-4" #"gpt-4o-mini"
-    vision_model: str = "glm-4v"# "gpt-4o"
-    embedding_model: str = "embedding-2"# "text-embedding-3-large"
+    llm_model: str = "" #"gpt-4o-mini"
+    vision_model: str = ""# "gpt-4o"
+    embedding_model: str = ""# "text-embedding-3-large"
     embedding_dim: int = 1024 #3072
     max_token_size: int = 2048 # 8192
 
     # 服务配置
     host: str = "0.0.0.0"
     port: int = 8008
-    static_base_url: str = ""
+    static_base_url: str = "http://47.100.14.93:8008"
 
     # 存储配置
-    working_dir: str = "../rag_storage"
-    image_storage: str = "../static/images"
+    working_dir: str = "./rag_storage"
+    image_storage: str = "./static/images"
 
-    log_dir: Path = Path("../logs")
+    log_dir: Path = Path("./logs")
 
     # 业务配置
     use_chinese_prompts: bool = True

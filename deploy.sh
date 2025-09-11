@@ -1,23 +1,27 @@
 #!/bin/bash
-# shellcheck disable=SC2164
-cd "$(dirname "$0")"
+
+# 获取脚本所在的绝对路径
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "脚本目录: $SCRIPT_DIR"
+
+# 切换到脚本所在目录
+cd "$SCRIPT_DIR"
+echo "当前工作目录: $(pwd)"
+
 echo "=== 生产环境RAG系统部署 ==="
 
-# 1. 创建目录结构
-#mkdir -p config core api utils static/images logs
-#
-## 2. 安装依赖
-#pip install -r requirements.txt
 
-# 3. 设置环境变量（根据实际情况修改）
-export API_KEY="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"
-export LLM_PROVIDER="openai"  # 或 "zhipu", "deepseek"
-export STATIC_BASE_URL="http://localhost:8008"
-export HOST="0.0.0.0"
-export PORT="8008"
+# 检查config.json
+if [ ! -f "config.json" ]; then
+    echo "config.json文件不存在，请先创建配置文件"
+    exit 1
+fi
 
-# 4. 启动服务
 echo "启动RAG服务..."
+echo "工作目录设置为: $SCRIPT_DIR"
+
+# 确保在正确目录下启动Python应用
+cd "$SCRIPT_DIR"
 python -m api.server
 
 echo "部署完成！"
