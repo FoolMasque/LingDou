@@ -108,7 +108,7 @@ if __name__ == "__main__":
     import os
 
     os.environ[
-        'API_KEY'] = "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"
+        'API_KEY'] = "sk-proj-xxxx"
     os.environ['LLM_PROVIDER'] = "openai"
 
     print(f"""
@@ -131,7 +131,7 @@ if __name__ == "__main__":
 使用示例:
 curl -X POST "http://localhost:{settings.port}/api/query" \\
   -H "Content-Type: application/json" \\
-  -d '{{"business_id": "furniture", "query": "推荐一个茶桌"}}'
+  -d '{{"business_id": "furniture", "query": "推荐一个茶桌", "mode": "hybrid"}}'
 """)
 
     uvicorn.run(

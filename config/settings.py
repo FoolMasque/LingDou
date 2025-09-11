@@ -23,6 +23,7 @@ class SystemConfig:
     vision_model: str = "glm-4v"# "gpt-4o"
     embedding_model: str = "embedding-2"# "text-embedding-3-large"
     embedding_dim: int = 1024 #3072
+    max_token_size: int = 2048 # 8192
 
     # 服务配置
     host: str = "0.0.0.0"
@@ -50,29 +51,34 @@ class SystemConfig:
             "llm_model": "gpt-4o-mini",
             "vision_model": "gpt-4o",
             "embedding_model": "text-embedding-3-large",
-            "embedding_dim": 3072
+            "embedding_dim": 3072,
+            "max_token_size": 8192
         },
         "zhipu": {
             "base_url": "https://open.bigmodel.cn/api/paas/v4",
             "llm_model": "glm-4",
             "vision_model": "glm-4.5v",
             "embedding_model": "embedding-2",
-            "embedding_dim": 1024
+            "embedding_dim": 1024,
+            "max_token_size": 2048
         },
         "deepseek": {
             "base_url": "https://api.deepseek.com/v1",
             "llm_model": "deepseek-chat",
             "vision_model": "deepseek-vl",
             "embedding_model": "deepseek-embedding",
-            "embedding_dim": 1536
+            "embedding_dim": 1536,
+            "max_token_size": 8192
         },
         "qwen": {
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "llm_model": "qwen3-14b",
+            "llm_model": "qwen2.5-14b-instruct",
             "vision_model": "qwen2.5-vl-32b-instruct",
             "embedding_model": "text-embedding-v4",
-            "embedding_dim": 1024
+            "embedding_dim": 1024,
+            "max_token_size": 8192
         }
+
     })
 
     def __post_init__(self):

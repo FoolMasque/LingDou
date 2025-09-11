@@ -5,7 +5,7 @@
 from pathlib import Path
 import json
 import re
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
 import openai
 from lightrag import QueryParam
 from config.settings import settings
@@ -18,6 +18,8 @@ from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.openai import openai_embed
+import asyncio
+import time
 
 logger = setup_logger(__name__)
 
@@ -64,6 +66,12 @@ class ProductionRAGInstance:
 
         logger.info(f"创建RAG实例: {business_id}")
 
+        # 添加批处理缓存
+        self.embedding_cache = {}
+        self.batch_texts = []
+        self.batch_threshold = 20  # 积累20个文本后批量处理
+        self.processed_items_count = 0
+
     async def initialize(self):
         """初始化RAG实例"""
         if self.initialized:
@@ -72,6 +80,26 @@ class ProductionRAGInstance:
         logger.info(f"初始化RAG实例: {self.business_id}")
 
         try:
+
+            # 检查并清理不兼容的旧数据
+            # working_dir_path = Path(self.working_dir)
+            # if working_dir_path.exists():
+            #     logger.warning(f"检测到旧数据目录: {self.working_dir}")
+            #
+            #     # 检查是否存在维度不匹配的风险
+            #     vector_files = list(working_dir_path.glob("*.pkl")) + list(working_dir_path.glob("*.json"))
+            #     if vector_files:
+            #         logger.warning(f"发现 {len(vector_files)} 个可能的向量文件")
+            #
+            #         # 备份后清理
+            #         import shutil
+            #         backup_dir = f"{self.working_dir}_backup_{int(time.time())}"
+            #         shutil.move(str(working_dir_path), backup_dir)
+            #         logger.info(f"旧数据已备份到: {backup_dir}")
+            #
+            #         # 重新创建目录
+            #         working_dir_path.mkdir(parents=True, exist_ok=True)
+
             # 每次初始化时都应用中文提示词
             from config.runtime_prompt_patch import apply_chinese_prompts_runtime
             apply_chinese_prompts_runtime()
@@ -95,13 +123,24 @@ class ProductionRAGInstance:
         self.lightrag_instance = LightRAG(
             working_dir=self.working_dir,
             embedding_func=self._get_embedding_func(),
-            llm_model_func=self._get_llm_func()
+            llm_model_func=self._get_llm_func(),
+            chunk_token_size=3000,  # 增大分块大小
+            chunk_overlap_token_size=150,  # 减小重叠
+            entity_extract_max_gleaning=1,  # 减少实体提取轮次
         )
 
         await self.lightrag_instance.initialize_storages()
         await initialize_pipeline_status()
 
         logger.info(f"LightRAG创建完成: {self.working_dir}")
+
+    def clear_cache_if_needed(self):
+        """定期清理缓存避免内存溢出"""
+        if len(self.embedding_cache) > 1000:  # 超过1000条记录就清理
+            # 保留最近使用的一半
+            items = list(self.embedding_cache.items())
+            self.embedding_cache = dict(items[-500:])
+            logger.info("缓存已清理，保留最近500条记录")
 
     def _get_llm_func(self):
         def llm_func(prompt, system_prompt=None, history_messages=[], **kwargs):
@@ -117,19 +156,127 @@ class ProductionRAGInstance:
 
         return llm_func
 
-    # TODO：无法适配qwen的接口（测试免费版）
     def _get_embedding_func(self):
+        """根据模型选择相应的embedding处理策略"""
+
+        # 根据embedding模型选择处理函数
+        if settings.embedding_model in ["text-embedding-v4", "text-embedding-v3"]:
+            # Qwen的v4和v3模型有严格的批量限制
+            return self._get_qwen_v4_embedding_func()
+        else:
+            # 其他提供商的embedding模型（OpenAI、智谱、Deepseek等）
+            return self._get_standard_embedding_func()
+
+    def _get_standard_embedding_func(self):
         """获取embedding函数"""
 
         return EmbeddingFunc(
             embedding_dim=settings.embedding_dim,
-            max_token_size=8192,
+            max_token_size=settings.max_token_size,
             func=lambda texts: openai_embed(
                 texts,
                 model=settings.embedding_model,
                 api_key=settings.api_key,
                 base_url=settings.base_url
             )
+        )
+
+    def _get_qwen_v4_embedding_func(self):
+        """Qwen v4/v3模型专用embedding函数 - 限制批量大小"""
+
+        async def qwen_v4_optimized_embed(texts):
+            """专门针对Qwen v4/v3模型的embedding处理"""
+            import asyncio
+            import inspect
+
+            if not texts:
+                return []
+
+            # Qwen v4的严格限制：最大10行
+            BATCH_SIZE = 10
+            MAX_RETRIES = 2
+
+            all_embeddings = []
+            total_batches = (len(texts) - 1) // BATCH_SIZE + 1
+
+            # 只在大批次时显示日志
+            if len(texts) > 5:
+                logger.info(f"Qwen v4 embedding: {len(texts)}个文本, {total_batches}个批次")
+
+            for i in range(0, len(texts), BATCH_SIZE):
+                batch_texts = texts[i:i + BATCH_SIZE]
+
+                for retry in range(MAX_RETRIES):
+                    try:
+                        result = openai_embed(
+                            batch_texts,
+                            model=settings.embedding_model,
+                            api_key=settings.api_key,
+                            base_url=settings.base_url
+                        )
+
+                        if inspect.iscoroutine(result):
+                            batch_embeddings = await result
+                        else:
+                            batch_embeddings = result
+
+                        # 验证向量维度
+                        if batch_embeddings and len(batch_embeddings[0]) != settings.embedding_dim:
+                            logger.warning(f"维度不匹配: 期望{settings.embedding_dim}, 实际{len(batch_embeddings[0])}")
+
+                        all_embeddings.extend(batch_embeddings)
+                        break
+
+                    except Exception as e:
+                        error_msg = str(e)
+                        if "batch size" in error_msg.lower() or "行数" in error_msg:
+                            # 如果还是批量问题，进一步拆分
+                            if len(batch_texts) > 1:
+                                logger.warning(f"批次大小{len(batch_texts)}仍超限，拆分为单个")
+                                single_embeddings = []
+                                for text in batch_texts:
+                                    try:
+                                        single_result = openai_embed(
+                                            [text],
+                                            model=settings.embedding_model,
+                                            api_key=settings.api_key,
+                                            base_url=settings.base_url
+                                        )
+                                        if inspect.iscoroutine(single_result):
+                                            single_result = await single_result
+                                        single_embeddings.extend(single_result)
+                                        await asyncio.sleep(0.1)
+                                    except:
+                                        dummy = [0.0] * settings.embedding_dim
+                                        single_embeddings.append(dummy)
+                                all_embeddings.extend(single_embeddings)
+                                break
+                            else:
+                                # 单个文本还失败，用零向量
+                                dummy = [0.0] * settings.embedding_dim
+                                all_embeddings.append(dummy)
+                                break
+
+                        if retry < MAX_RETRIES - 1:
+                            await asyncio.sleep(0.5)
+                        else:
+                            # 最终失败
+                            dummy_embeddings = [[0.0] * settings.embedding_dim] * len(batch_texts)
+                            all_embeddings.extend(dummy_embeddings)
+
+                # 批次间延迟
+                if i + BATCH_SIZE < len(texts):
+                    await asyncio.sleep(0.2)
+
+            if len(texts) > 5:
+                logger.info(f"Qwen v4 embedding完成: {len(all_embeddings)}个向量")
+
+            return all_embeddings
+
+        return EmbeddingFunc(
+            embedding_dim=settings.embedding_dim,
+            max_token_size=settings.max_token_size,
+            func=qwen_v4_optimized_embed
         )
 
     def _create_image_processor(self):
@@ -140,56 +287,6 @@ class ProductionRAGInstance:
         )
 
         logger.info("图像处理器创建完成")
-
-    def _get_simple_vision_func(self):
-        """待废弃：vision函数 - 依赖运行时替换的提示词，无法适配glm模型"""
-
-        async def simple_vision_func(prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs):
-
-            try:
-                client = openai.AsyncOpenAI(
-                    api_key=settings.api_key,
-                    base_url=settings.base_url,
-                    timeout=60.0
-                )
-
-                # 使用传入的system_prompt（已经在运行时被替换为中文）
-                messages = [
-                    {"role": "system", "content": system_prompt or "你是专业的家具分析师。"}
-                ]
-                # logger.info(f"<UNK>提示词: {prompt[:50]}")
-                if image_data:
-                    messages.append({
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
-                        ]
-                    })
-                    model = settings.vision_model
-                else:
-                    messages.append({"role": "user", "content": prompt})
-                    model = settings.llm_model
-
-                try:
-                    response = await client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        temperature=0,
-                        max_tokens=600,
-                        **kwargs
-                    )
-                    result = response.choices[0].message.content
-                    logger.info(f"<UNK>响应: {result}")
-                    return result
-                finally:
-                    await client.close()
-
-            except Exception as e:
-                logger.error(f"Vision调用失败: {e}")
-                return f"分析失败: {str(e)}"
-
-        return simple_vision_func
 
     def _get_vision_func(self):
         """兼容多种模型格式的vision函数"""
@@ -562,9 +659,17 @@ class ProductionRAGInstance:
                 except Exception as e:
                     logger.error(f"处理失败 {img_key}: {e}")
                     continue
+
+            # 处理完成后增加计数
+            self.processed_items_count += 1
+
+            # 每处理20个商品显示一次总体进度
+            if self.processed_items_count % 20 == 0:
+                logger.info(f"总体进度：已处理 {self.processed_items_count} 个商品")
             logger.info(
                 f"商品处理完成: {entity_name}, 处理 {processed_count} 张，跳过 {skipped_count} 张（共 {total_images} 张）")
             return True
+
 
         except Exception as e:
             logger.error(f"多模态处理失败: {e}")
