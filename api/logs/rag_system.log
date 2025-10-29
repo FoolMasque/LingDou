@@ -1,9 +1,0 @@
-2025-09-11 14:54:51,359 - api.server - INFO - === 生产环境RAG系统启动 ===
-2025-09-11 14:54:51,359 - api.server - INFO - 配置: provider=openai, model=gpt-4o-mini
-2025-09-11 14:54:51,359 - core.system - INFO - 系统初始化完成，配置: provider=openai, model=gpt-4o-mini
-2025-09-11 14:54:51,360 - core.rag_instance - INFO - 创建RAG实例: furniture
-2025-09-11 14:54:51,360 - core.system - INFO - 业务注册成功: 侘界家具
-2025-09-11 14:54:51,360 - api.server - INFO - 默认业务注册完成
-2025-09-11 14:54:51,360 - api.server - INFO - === 系统启动完成 ===
-2025-09-11 14:58:44,821 - api.server - INFO - 系统关闭中...
-2025-09-11 14:58:44,821 - api.server - INFO - 系统关闭完成

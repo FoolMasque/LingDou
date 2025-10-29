@@ -43,6 +43,7 @@ class SystemConfig:
     request_timeout: int = 30
     max_dimension: int = 512 # 图片压缩最长边像素
     jpeg_quality: int = 85 # 图片质量百分比
+    debug : bool=False
 
     # 模型提供商配置映射
     provider_configs: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {

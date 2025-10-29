@@ -28,14 +28,6 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# 创建必要目录
-create_directories() {
-    local dirs=("logs" "rag_storage" "static/images")
-    for dir in "${dirs[@]}"; do
-        mkdir -p "${PROJECT_ROOT}/${dir}"
-    done
-}
-
 # 检查端口占用
 check_port() {
     local port=${1:-8008}
@@ -52,7 +44,7 @@ start_service() {
     log_info "启动 RAG 系统..."
     
     cd "${PROJECT_ROOT}"
-    create_directories
+
     check_port
     
     # 检查配置文件
@@ -72,9 +64,9 @@ start_service() {
     
     if kill -0 $pid 2>/dev/null; then
         log_info "✅ 服务启动成功 (PID: $pid)"
-        log_info "������ 访问地址: http://localhost:8008/docs"
-        log_info "������ 健康检查: http://localhost:8008/health"
-        log_info "������ 查看日志: ./deploy.sh logs"
+        log_info "�� 访问地址: http://localhost:8008/docs"
+        log_info "�� 健康检查: http://localhost:8008/health"
+        log_info "�� 查看日志: ./deploy.sh logs"
     else
         log_error "❌ 服务启动失败，请查看日志: ${LOG_FILE}"
         rm -f "${PID_FILE}"
@@ -117,7 +109,7 @@ status_service() {
         local pid=$(cat "${PID_FILE}")
         if kill -0 $pid 2>/dev/null; then
             log_info "✅ 服务运行中 (PID: $pid)"
-            log_info "������ 访问地址: http://localhost:8008/docs"
+            log_info "�� 访问地址: http://localhost:8008/docs"
         else
             log_warn "进程已停止，清理PID文件"
             rm -f "${PID_FILE}"

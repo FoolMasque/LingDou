@@ -3,7 +3,8 @@
 核心系统类
 """
 import asyncio
-from typing import Dict, Any, List
+from dataclasses import field
+from typing import Dict, Any, List, Literal, cast
 from pathlib import Path
 import json
 import aiofiles
@@ -222,15 +223,103 @@ class ProductionCoreSystem:
                 item["detail_images"] = mapping.local_path
                 item["detail_images_remote"] = mapping.remote_url
 
-    async def query(self, business_id: str, query: str, mode: str = "hybrid") -> str:
-        """查询接口"""
+    async def query(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None) -> str:
+        """纯文本查询接口"""
+        if history is None:
+            history = field(default_factory=list)
         if business_id not in self.rag_instances:
             raise ValueError(f"未注册的业务: {business_id}")
 
         rag = self.rag_instances[business_id]
-        result = await rag.aquery(query, mode)
+        # result = await rag.aquery(query, mode)
+        result = await rag.aquery_with_history(query=query, mode=mode,history=history)
 
         return result
+
+    async def query_multimodal(self,
+                               business_id: str,
+                               query: str,
+                               user_images: List[str] = None,
+                               history=None,
+                               mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid")) -> Dict[str, Any]:
+        """
+        多模态查询接口
+
+        Args:
+            business_id: 业务ID
+            query: 文本查询
+            user_images: 用户上传的图片base64列表
+            mode: 查询模式
+
+        Returns:
+            {
+                "result": str,  # Markdown格式回答
+                "library_images_count": int,  # 检索到的图片数量
+            }
+        """
+        if history is None:
+            history = field(default_factory=list)
+        if business_id not in self.rag_instances:
+            raise ValueError(f"未注册的业务: {business_id}")
+
+        rag = self.rag_instances[business_id]
+
+        logger.info(f"[{business_id}] 多模态查询: 用户图片 {len(user_images) if user_images else 0} 张")
+
+        # 调用RAG实例的多模态查询
+        result_data = await rag.aquery_multimodal_with_history(
+            query=query,
+            user_images=user_images,
+            history=history,
+            mode=mode
+        )
+
+        return result_data
+
+    # ====== 流式方法 ======
+
+    async def query_stream(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None):
+        """
+        纯文本流式查询
+
+        被调用路径：
+        api/routes.py::_handle_streaming_query()
+            → 这里
+            → rag.aquery_stream()
+        """
+        if history is None:
+            history = field(default_factory=list)
+        if business_id not in self.rag_instances:
+            raise ValueError(f"未注册的业务: {business_id}")
+
+        rag = self.rag_instances[business_id]
+
+        async for chunk in rag.aquery_stream(query, mode,history):
+            yield chunk
+
+    async def query_multimodal_stream(self,
+                                      business_id: str,
+                                      query: str,
+                                      user_images: List[str] = None,
+                                      history=None,
+                                      mode: str = "hybrid"):
+        """
+        多模态流式查询
+
+        被调用路径：
+        api/routes.py::_handle_streaming_query()
+            → 这里
+            → rag.aquery_multimodal_stream()
+        """
+        if history is None:
+            history = field(default_factory=list)
+        if business_id not in self.rag_instances:
+            raise ValueError(f"未注册的业务: {business_id}")
+
+        rag = self.rag_instances[business_id]
+
+        async for chunk in rag.aquery_multimodal_stream(query, user_images, mode,history):
+            yield chunk
 
     def get_business_status(self, business_id: str) -> Dict[str, Any]:
         """获取业务状态"""

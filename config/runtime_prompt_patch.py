@@ -1,3 +1,7 @@
+# config/runtime_prompt_patch.py
+"""
+中文业务提示词 - 基于业务定制
+"""
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -104,9 +108,7 @@ def apply_chinese_prompts_runtime():
 
                 请简要概括此内容的主要特征和重要信息。""",
             "QUERY_GENERIC_ANALYST_SYSTEM": "您是一位专业的内容分析师，能够准确分析 {content_type} 类型的内容。",
-            "QUERY_ENHANCEMENT_SUFFIX": "\n\n请根据用户查询和提供的多模态内容信息，提供全面的答案。"
-
-
+            "QUERY_ENHANCEMENT_SUFFIX": "\n\n请根据用户查询和提供的多模态内容信息，提供全面的答案。",
         }
 
         # 直接替换
@@ -140,3 +142,155 @@ def verify_chinese_prompts():
     except Exception as e:
         logger.error(f"验证失败: {e}")
         return False
+
+
+def get_business_specific_caption_builder(business_id: str):
+    """根据业务ID获取专用的caption构建器"""
+
+    builders = {
+        "furniture": _build_furniture_caption,
+        "toilet": _build_toilet_caption,
+        "electronics": _build_electronics_caption
+    }
+
+    return builders.get(business_id, _build_generic_caption)
+
+
+def _build_furniture_caption(item: dict) -> str:
+    """家具业务专用caption构建"""
+    caption_parts = ["以下是该家具商品的已知信息："]
+
+    key_fields = {
+        "风格": item.get("风格", ""),
+        "子类": item.get("子类", ""),
+        "商品名": item.get("商品名", ""),
+        "材质规格": item.get("subtitle", ""),
+        "关键词": item.get("keyword", "")
+    }
+
+    for field, value in key_fields.items():
+        if value:
+            caption_parts.append(f"- {field}: {value}")
+
+    caption_parts.extend([
+        "",
+        "请分析家具产品图像，重点提取：",
+        "1. 材质工艺和质感特征",
+        "2. 设计风格和美学元素",
+        "3. 功能特点和使用场景",
+        "4. 尺寸规格和空间适配性"
+    ])
+
+    return "\n".join(caption_parts)
+
+
+def _build_toilet_caption(item: dict) -> str:
+    """马桶业务专用caption构建"""
+    caption_parts = ["以下是该马桶商品的已知信息："]
+
+    key_fields = {
+        "品牌": item.get("品牌", ""),
+        "型号": item.get("型号", ""),
+        "商品名": item.get("商品名", ""),
+        "功能": item.get("功能", ""),
+        "规格": item.get("规格", ""),
+        "适用场景": item.get("适用场景", ""),
+        "关键词": item.get("keyword", "")
+    }
+
+    for field, value in key_fields.items():
+        if value:
+            caption_parts.append(f"- {field}: {value}")
+
+    caption_parts.extend([
+        "",
+        "请分析马桶产品图像，重点提取：",
+        "1. 外观设计和材质（陶瓷、表面处理等）",
+        "2. 功能特点（冲洗方式、节水技术、智能功能等）",
+        "3. 安装规格（坑距、尺寸、重量等）",
+        "4. 使用体验（舒适度、操作便利性等）"
+    ])
+
+    return "\n".join(caption_parts)
+
+
+def _build_electronics_caption(item: dict) -> str:
+    """电器业务专用caption构建"""
+    caption_parts = ["以下是该电器商品的已知信息："]
+
+    key_fields = {
+        "品牌": item.get("品牌", ""),
+        "型号": item.get("型号", ""),
+        "商品名": item.get("商品名", ""),
+        "功能特点": item.get("功能特点", ""),
+        "技术参数": item.get("技术参数", ""),
+        "适用场景": item.get("适用场景", "")
+    }
+
+    for field, value in key_fields.items():
+        if value:
+            caption_parts.append(f"- {field}: {value}")
+
+    caption_parts.extend([
+        "",
+        "请分析电器产品图像，重点提取：",
+        "1. 外观设计和做工品质",
+        "2. 技术特点和创新功能",
+        "3. 操作界面和使用便利性",
+        "4. 适用场景和性能表现"
+    ])
+
+    return "\n".join(caption_parts)
+
+
+def _build_generic_caption(item: dict) -> str:
+    """通用caption构建"""
+    caption_parts = ["以下是该商品的已知信息："]
+
+    # 通用字段
+    common_fields = ["商品名", "品牌", "型号", "规格", "功能", "关键词", "keyword"]
+
+    for field in common_fields:
+        value = item.get(field, "")
+        if value:
+            caption_parts.append(f"- {field}: {value}")
+
+    caption_parts.extend([
+        "",
+        "请分析产品图像，重点提取：",
+        "1. 外观设计和材质特征",
+        "2. 功能特点和技术亮点",
+        "3. 使用场景和适用性",
+        "4. 品质和工艺表现"
+    ])
+
+    return "\n".join(caption_parts)
+
+
+rag_response =  """你是侘界家具的智能对话机器人，请基于知识图谱信息，为用户提供专业的家具产品问答，并帮助用户做出最佳购买决策。
+    **用户需求**：{user_query}
+    特别注意：图片显示只能是后缀为.jpg/.png的格式
+
+    **推荐要求**：
+    1. **产品匹配**：根据用户需求精准匹配合适的家具产品
+    2. **详细介绍**：
+       - 材质工艺：木材种类、石材类型、制作工艺
+       - 设计特色：风格分类、美学元素、设计亮点
+       - 功能特点：使用场景、实用功能、人体工学
+       - 规格参数：准确的尺寸数据、空间适配性
+    
+    3. **专业建议**：
+       - 选购要点和注意事项
+       - 保养维护指导
+       - 空间搭配建议
+       - 价格性价比分析
+    
+    4. **图片展示**：提供高质量的产品图片（确保不对原始图片链接进行修改，返回图片markdown url）
+    
+    5. **格式要求**：
+       - 使用清晰的标题结构
+       - 重要信息加粗标记
+       - 分段明确，便于阅读
+       - 语言专业但通俗易懂
+    
+    请提供详细、准确、实用的中文家具推荐方案，帮助用户做出最佳购买决策。"""

@@ -236,10 +236,21 @@ class MultiModalProcessor:
     def __init__(self, business_id: str):
         self.business_id = business_id
 
+        # 导入业务专用的caption构建器
+        try:
+            from config.runtime_prompt_patch import get_business_specific_caption_builder
+            self.caption_builder = get_business_specific_caption_builder(business_id)
+        except ImportError:
+            self.caption_builder = self._build_generic_caption
+            logger.warning(f"未找到业务专用caption构建器，使用通用构建器: {business_id}")
+
+
+
+
     def build_modal_content(self, item: Dict[str, Any],
                                   image_manager: ImageManager = None) -> Dict[str, Any]:
         """
-        构建多模态内容
+        构建多模态内容 - 支持不同业务
         处理URL映射和内容去重
         """
         img_path = {}
@@ -247,24 +258,8 @@ class MultiModalProcessor:
         processed_urls = set()
 
         # 收集所有图片信息（使用原始URL）
-        all_images = []
-
-        # 使用原始URL字段
-        cover_pic_url = item.get("cover_pic_original") or item.get("cover_pic")
-        if cover_pic_url:
-            all_images.append(("cover_pic", cover_pic_url))
-
-        # 详情图片 - 同样使用原始URL
-        detail_images_urls = item.get("detail_images_original") or item.get("detail_images", [])
-        if detail_images_urls:
-            if isinstance(detail_images_urls, list):
-                for i, img_url in enumerate(detail_images_urls):
-                    if img_url:
-                        all_images.append((f"detail_image_{i}", img_url))
-            elif isinstance(detail_images_urls, str):
-                all_images.append(("detail_image_0", detail_images_urls))
-
-        logger.debug(f"收集到 {len(all_images)} 个图片位置")
+        all_images = self._collect_all_images(item)
+        logger.debug(f"[{self.business_id}] 收集到 {len(all_images)} 个图片位置")
 
         # 基于内容和URL去重
         for img_key, original_url in all_images:
@@ -291,13 +286,7 @@ class MultiModalProcessor:
                 else:
                     logger.warning(f"未找到映射: {img_key} -> {original_url[-30:]}")
                     # 降级：使用item中已有的本地路径
-                    if img_key == "cover_pic" and item.get("cover_pic"):
-                        img_path[img_key] = item["cover_pic"]
-                    elif img_key.startswith("detail_image_"):
-                        idx = int(img_key.split("_")[-1])
-                        detail_images = item.get("detail_images", [])
-                        if isinstance(detail_images, list) and idx < len(detail_images):
-                            img_path[img_key] = detail_images[idx]
+                    self._fallback_image_handling(item, img_key, img_path)
             else:
                 # 没有image_manager时，使用URL去重
                 if original_url not in processed_urls:
@@ -308,10 +297,10 @@ class MultiModalProcessor:
         original_count = len(all_images)
         final_count = len(img_path)
         if original_count != final_count:
-            logger.info(f"图片去重: {original_count} -> {final_count} 张 (去除 {original_count - final_count} 张重复)")
+            logger.info(f"[{self.business_id}] 图片去重: {original_count} -> {final_count} 张 (去除 {original_count - final_count} 张重复)")
 
-        # 构建最终内容
-        img_caption = self._build_caption(item)
+        # 构建最终内容 - 使用业务专用的caption构建器
+        img_caption = self.caption_builder(item)
 
         return {
             "img_path": img_path,
@@ -319,33 +308,87 @@ class MultiModalProcessor:
             "img_footnote": []
         }
 
-    def _build_caption(self, item: Dict[str, Any]) -> str:
-        """构建图片说明 - 家具业务专用"""
-        caption_parts = ["以下是该商品的已知信息（仅供缺失字段回填，禁止臆造）："]
-        # print(item)
+    def _collect_all_images(self, item: Dict[str, Any]) -> List[tuple]:
+        """收集所有图片URL - 根据业务类型适配不同字段"""
+        all_images = []
 
-        # 提取关键字段
-        key_fields = {
-            "风格": item.get("风格", ""),
-            "子类": item.get("子类", ""),
+        # 通用图片字段
+        cover_pic_url = item.get("cover_pic_original") or item.get("cover_pic")
+        if cover_pic_url:
+            all_images.append(("cover_pic", cover_pic_url))
+
+        # 详情图片
+        detail_images_urls = item.get("detail_images_original") or item.get("detail_images", [])
+        if detail_images_urls:
+            if isinstance(detail_images_urls, list):
+                for i, img_url in enumerate(detail_images_urls):
+                    if img_url:
+                        all_images.append((f"detail_image_{i}", img_url))
+            elif isinstance(detail_images_urls, str):
+                all_images.append(("detail_image_0", detail_images_urls))
+
+        # 业务专用图片字段
+        if self.business_id == "toilet":
+            # 马桶业务特有的安装图片
+            installation_pic = item.get("installation_pic_original") or item.get("installation_pic")
+            if installation_pic:
+                all_images.append(("installation_pic", installation_pic))
+
+        elif self.business_id == "electronics":
+            # 电器业务特有的功能展示图片
+            feature_pics = item.get("feature_pics_original") or item.get("feature_pics", [])
+            if feature_pics:
+                if isinstance(feature_pics, list):
+                    for i, img_url in enumerate(feature_pics):
+                        if img_url:
+                            all_images.append((f"feature_pic_{i}", img_url))
+                elif isinstance(feature_pics, str):
+                    all_images.append(("feature_pic_0", feature_pics))
+
+        return all_images
+
+    def _fallback_image_handling(self, item: Dict[str, Any], img_key: str, img_path: Dict[str, str]):
+        """降级图片处理 - 使用item中已有的本地路径"""
+        if img_key == "cover_pic" and item.get("cover_pic"):
+            img_path[img_key] = item["cover_pic"]
+        elif img_key.startswith("detail_image_"):
+            idx = int(img_key.split("_")[-1])
+            detail_images = item.get("detail_images", [])
+            if isinstance(detail_images, list) and idx < len(detail_images):
+                img_path[img_key] = detail_images[idx]
+        elif img_key == "installation_pic" and item.get("installation_pic"):
+            img_path[img_key] = item["installation_pic"]
+        elif img_key.startswith("feature_pic_"):
+            idx = int(img_key.split("_")[-1])
+            feature_pics = item.get("feature_pics", [])
+            if isinstance(feature_pics, list) and idx < len(feature_pics):
+                img_path[img_key] = feature_pics[idx]
+
+    def _build_generic_caption(self, item: Dict[str, Any]) -> str:
+        """通用图片说明构建 - 当没有业务专用构建器时使用"""
+        caption_parts = ["以下是该商品的已知信息："]
+
+        # 通用字段
+        common_fields = {
             "商品名": item.get("商品名", ""),
-            "材质规格": item.get("subtitle", ""),
+            "品牌": item.get("品牌", ""),
+            "型号": item.get("型号", ""),
+            "规格": item.get("规格", "") or item.get("subtitle", ""),
+            "功能": item.get("功能", ""),
             "关键词": item.get("keyword", "")
         }
 
-        for field, value in key_fields.items():
+        for field, value in common_fields.items():
             if value:
                 caption_parts.append(f"- {field}: {value}")
-                # print(f"- {field}: {value}")
 
-        # 添加分析指导
         caption_parts.extend([
             "",
             "请分析产品图像，重点提取：",
-            "1. 材质工艺和质感特征",
-            "2. 设计风格和美学元素",
-            "3. 功能特点和使用场景",
-            "4. 尺寸规格和空间适配性"
+            "1. 外观设计和材质特征",
+            "2. 功能特点和技术亮点",
+            "3. 使用场景和适用性",
+            "4. 品质和工艺表现"
         ])
 
         return "\n".join(caption_parts)

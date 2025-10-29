@@ -1,5 +1,5 @@
 # 灵豆多模态智能问答
-基于RAG-Anything 1.2.7 + LightRAG构建的中文多模态智能问答系统，专为家具、电器等垂直领域设计。
+基于RAG-Anything + LightRAG构建的中文多模态智能问答系统，专为家具、电器等垂直领域设计。
 
 ## 系统概述
 灵豆是个多租户RAG系统，支持处理结构化爬虫数据和企业文档，提供智能的中文多模态问答服务。系统采用知识图谱+向量检索的混合架构，特别优化了中文内容理解和图像分析能力。
@@ -80,15 +80,11 @@
 
 2. **性能进一步优化**
    - [ ] 缓存机制（查询结果缓存）
-   - [ ] 批处理优化（减少API调用）
 
 3. **多业务扩展**
-   - [ ] 马桶等垂直领域
-   - [ ] 业务间数据共享机制
+   - [ ] 待测试优化
 
 4. **高级查询功能**
-   - [ ] 多轮对话支持
-   - [ ] 用户画像和个性化推荐
    - [ ] 搜索结果排序优化
 
 5. **接口拓展**
@@ -101,7 +97,7 @@
 ### 后端框架
 - **FastAPI** - 高性能异步Web框架
 - **LightRAG** - 轻量级RAG框架
-- **RAG-Anything 1.2.7** - 多模态RAG引擎
+- **RAG-Anything** - 多模态RAG引擎
 - 
 - ### 前端框架（页面加在图文通里，端口对接清楚即可）
 - **React** - 
@@ -145,8 +141,13 @@ vim config.json
 python api/server.py
 
 # 生产模式
-#gunicorn api.server:app -w 4 -k uvicorn.workers.UvicornWorker
-deploy.sh
+deploy.sh 
+          start        启动服务 (默认)
+          stop         停止服务
+          restart      重启服务
+          status       查看状态
+          logs [n]     查看最近n行日志 (默认50行)
+          logs live    查看实时日志
 ```
 
 ### 基本使用
@@ -174,27 +175,32 @@ curl "http://localhost:8008/api/status/furniture"
 
 ```
 LingDou-rag-system/
-├── api/                        # API接口层
+├── api/                       # API接口层
 │   ├── models.py              # 数据模型定义
 │   ├── routes.py              # 路由处理
 │   └── server.py              # FastAPI服务器
-├── core/                       # 核心业务层
+├── core/                      # 核心业务层
 │   ├── components.py          # 核心组件
 │   ├── rag_instance.py        # RAG实例
+│   ├── conversation_manager.py# 会话管理
+│   ├── image_processor.py     # 图片处理器
 │   └── system.py              # 系统控制器
-├── config/                     # 配置管理
+├── config/                    # 配置管理
 │   ├── settings.py            # 配置类
-│   └── prompts.py             # 中文提示词
-├── utils/                      # 工具函数
+│   └── runtime_prompt_patch.py# 运行时内存替换中文提示词
+├── utils/                     # 工具函数
 │   ├── url_helper.py          # URL处理工具
 │   └── logger.py              # 日志系统
-├── static/                     # 静态文件存储
+├── static/                    # 静态文件存储
 │   └── images/                # 图片文件夹
 │       └── furniture/         # 按业务分类
-├── logs/                       # 日志文件
+├── conversation/              # File模式 会话存储文件夹
+│   └── *.json/                # 会话id存储
+├── logs/                      # 日志文件
 ├── rag_storage_*/             # RAG持久化存储
 ├── config.json                # 系统配置
 ├── requirements.txt           # Python依赖
+├── deploy.sh                  # 启动脚本
 └── README.md                  # 项目文档
 ```
 
