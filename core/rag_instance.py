@@ -19,8 +19,11 @@ from lightrag.utils import EmbeddingFunc
 from lightrag.llm.openai import openai_embed
 import asyncio
 import inspect
+
+from api.routes import Dependencies
+# from api.server import core_system
 from config.settings import settings
-from core.components import ImageOptimizer
+from core.components import ImageOptimizer, BusinessConfig
 from utils.url_helper import post_process_response_urls
 from utils.logger import setup_logger
 from lightrag import LightRAG
@@ -87,15 +90,23 @@ class ProductionRAGInstance:
 
     async def _create_lightrag(self):
         """创建LightRAG实例 """
-
-        self.lightrag_instance = LightRAG(
+        kwargs = dict(
             working_dir=self.working_dir,
             embedding_func=self._get_embedding_func(),
             llm_model_func=self._get_llm_func(),
-            chunk_token_size=3000,  # 增大分块大小
-            chunk_overlap_token_size=150,  # 减小重叠
-            entity_extract_max_gleaning=1,  # 减少实体提取轮次
+            chunk_token_size=3000, # 增大分块大小
+            chunk_overlap_token_size=150, # 减小重叠
+            entity_extract_max_gleaning=1, # 减少实体提取轮次
         )
+
+        if settings.rerank.enabled:
+            kwargs.update(
+                rerank_model_func=self._get_rerank_func(),
+                min_rerank_score=settings.rerank.score_threshold,
+            )
+
+        self.lightrag_instance = LightRAG(**kwargs)
+
 
         await self.lightrag_instance.initialize_storages()
         await initialize_pipeline_status()
@@ -129,6 +140,19 @@ class ProductionRAGInstance:
             )
 
         return llm_func
+
+    def _get_rerank_func(self):
+        """获取embedding函数"""
+
+        from lightrag.rerank import ali_rerank
+        from functools import partial
+
+        return partial(
+            ali_rerank,
+            model=settings.rerank.model,
+            api_key=settings.rerank.api_key,
+            base_url=settings.rerank.base_url
+        )
 
     def _get_embedding_func(self):
         """获取embedding函数"""
@@ -624,14 +648,17 @@ class ProductionRAGInstance:
             history = field(default_factory=list)
         await self.ensure_initialized()
         # prompt = config.runtime_prompt_patch.rag_response
-        return await self.lightrag_instance.aquery(query=query,
+
+        result = await self.lightrag_instance.aquery(query=query,
                                                    param=QueryParam(conversation_history=history,
                                                                     mode=mode,
                                                                     # only_need_context=True, # 检索的内容
                                                                     # only_need_prompt=True, # 输入LLM的提示词
-                                                                    user_prompt="请用简洁自然的方式回答问题,忽略输出References的部分。",
+                                                                    user_prompt="请用简洁自然的方式回答问题。",
                                                                     top_k=5),
-                                                   )  # PROMPTS["rag_response"]
+                                                   system_prompt=config.runtime_prompt_patch.system_prompt,
+                                                   )
+        return post_process_response_urls(result)
 
     async def aquery_multimodal_with_history(self,
                                              query: str,
@@ -686,7 +713,6 @@ class ProductionRAGInstance:
 
             # 步骤4: 提取并编码库中图片 TODO：可能没有
             enhanced_prompt, library_images = await self._extract_images_from_prompt(raw_prompt)
-            # print(enhanced_prompt)
 
             logger.info(f"检索到 {len(library_images)} 张产品图片")
 
@@ -703,7 +729,7 @@ class ProductionRAGInstance:
                 result = await self.lightrag_instance.aquery(query=enhanced_query,
                                                              param=QueryParam(conversation_history=history,
                                                                               mode=mode,
-                                                                              user_prompt="请用简洁自然的方式回答问题,忽略输出References的部分。",
+                                                                              user_prompt="请用简洁自然的方式回答问题",
                                                                               top_k=5),
                                                              )
 
@@ -905,6 +931,7 @@ class ProductionRAGInstance:
         return result
 
     async def aquery_stream(self, query: str,
+                            business_id: str,
                             mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
                             history=None, ):
         """
@@ -918,13 +945,11 @@ class ProductionRAGInstance:
 
         try:
             # 1. 获取检索prompt
-            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history)
-            raw_prompt = await self.lightrag_instance.aquery(query, param=query_param)
-            # raw_prompt = raw_prompt.split("Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):")[0]
-            # print(raw_prompt)
+            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,response_type="Single Paragraph")  # 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'
+            raw_prompt = await self.lightrag_instance.aquery(query, param=query_param,system_prompt=config.runtime_prompt_patch.system_prompt)
 
             # 无图片，直接调用LLM
-            async for chunk in self._call_llm_stream(raw_prompt):
+            async for chunk in self._call_llm_stream(raw_prompt, business_id):
                 yield chunk
 
         except Exception as e:
@@ -933,6 +958,7 @@ class ProductionRAGInstance:
 
     async def aquery_multimodal_stream(self,
                                        query: str,
+                                       business_id: str,
                                        user_images: List[str] = None,
                                        mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
                                        history=None):
@@ -959,10 +985,10 @@ class ProductionRAGInstance:
             if user_descriptions:
                 enhanced_query = f"""{query}
 
-    **用户提供的参考图片特征**:
-    {chr(10).join(user_descriptions)}
-
-    **要求**: 优先推荐与参考图风格、材质、设计相似的产品。"""
+                **用户提供的参考图片特征**:
+                {chr(10).join(user_descriptions)}
+            
+                **要求**: 优先推荐与参考图风格、材质、设计相似的产品。"""
 
             # 3. 获取检索prompt
             query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history)
@@ -983,7 +1009,7 @@ class ProductionRAGInstance:
                 ):
                     yield chunk
             else:
-                async for chunk in self._call_llm_stream(enhanced_query):
+                async for chunk in self._call_llm_stream(enhanced_query,business_id):
                     yield chunk
 
         except Exception as e:
@@ -991,20 +1017,21 @@ class ProductionRAGInstance:
             yield f"\n\n❌ 错误: {str(e)}"
 
     #  核心流式方法
-    async def _call_llm_stream(self, prompt: str):
+    async def _call_llm_stream(self, prompt: str, business_id: str):
         """流式调用LLM"""
         client = openai.AsyncOpenAI(
             api_key=settings.api_key,
             base_url=settings.base_url,
             timeout=90.0
         )
+        core_system = Dependencies.get_core_system()
+        business_name = core_system.businesses.get(business_id).name or "产品"
 
         try:
-            # TODO: 传入业务名称
             stream = await client.chat.completions.create(  # type: ignore
                 model=settings.llm_model,
                 messages=[
-                    {"role": "system", "content": "你是侘寂家具的专业导购,输出自然精炼，**请勿输出References**参考文献的部分"},
+                    {"role": "system", "content": f"你是{business_name}专业的智能助手,输出自然精炼"},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.75,
@@ -1040,7 +1067,7 @@ class ProductionRAGInstance:
     {query}
 
     === 回答要求 ===
-    请基于检索到的产品图片和上下文信息提供详细推荐，用Markdown格式回答，输出请忽略References参考文献的部分。
+    请基于检索到的产品图片和上下文信息提供详细推荐，用Markdown格式回答。
     """})
 
         client = openai.AsyncOpenAI(
@@ -1053,7 +1080,7 @@ class ProductionRAGInstance:
             stream = await client.chat.completions.create(  # type: ignore
                 model=settings.vision_model,
                 messages=[
-                    {"role": "system", "content": "你是侘寂家具的专业导购,输出自然精炼，输出请忽略References参考文献的部分"},
+                    {"role": "system", "content": "你是侘寂家具的专业导购,输出自然精炼"},
                     {"role": "user", "content": content_parts}
                 ],
                 temperature=0.75,
@@ -1106,7 +1133,7 @@ class ProductionRAGInstance:
         {query}
     
         === 回答要求 ===
-        请基于以上信息推荐产品，对比用户参考图与产品图，用Markdown格式回答，输出请忽略References参考文献的部分。
+        请基于以上信息推荐产品，对比用户参考图与产品图，用Markdown格式回答。
         """})
 
         client = openai.AsyncOpenAI(
@@ -1119,7 +1146,7 @@ class ProductionRAGInstance:
             stream = await client.chat.completions.create(  # type: ignore
                 model=settings.vision_model,
                 messages=[
-                    {"role": "system", "content": "你是侘寂家具的专业产品顾问，输出请忽略References参考文献的部分"},
+                    {"role": "system", "content": "你是侘寂家具的专业产品顾问"},
                     {"role": "user", "content": content_parts}
                 ],
                 temperature=0.1,

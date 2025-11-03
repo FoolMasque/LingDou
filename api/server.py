@@ -46,8 +46,6 @@ async def lifespan(app: FastAPI):
     core_system = ProductionCoreSystem()
     Dependencies.init(core_system)
 
-    # Dependencies.set_core_system(core_system)
-
     # 注册默认业务
     try:
         furniture_config = BusinessConfig(
@@ -184,7 +182,7 @@ async def health_check():
 def main():
     """主函数"""
     # 配置
-    host = os.getenv("HOST", "0.0.0.0")
+    host = os.getenv("HOST", "localhost")
     port = int(os.getenv("PORT", "8008"))
     reload = os.getenv("RELOAD", "false").lower() == "true"
     workers = int(os.getenv("WORKERS", "1"))
@@ -220,7 +218,7 @@ def main():
 
 
 if __name__ == "__main__":
-    os.environ['OPENAI_API_KEY'] = "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"
+    # os.environ['OPENAI_API_KEY'] = "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"
     main()
 # if __name__ == "__main__":
 #     import uvicorn

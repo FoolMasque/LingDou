@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Query
 from fastapi.responses import StreamingResponse
 from pathlib import Path
 
+from config.settings import settings
 from api.models import ProcessRequest, QueryRequest, QueryResponse
 from core.image_processor import ImageProcessor  # 抽取图片处理逻辑
 from core.conversation_manager import ConversationManager, StorageBackend
@@ -56,16 +57,15 @@ class Dependencies:
         cls.core_system = core_system
 
         # 初始化会话管理器
-        storage_backend = os.getenv("CONVERSATION_STORAGE", "file")
-        storage_config = {
-            "storage_dir": os.getenv("CONVERSATION_DIR", "conversations")
-        }
+        conv_conf = settings.conversation
+        storage_backend = conv_conf.storage_backend
+        storage_config = settings.get_storage_config()
 
         cls.conversation_manager = ConversationManager(
             storage_backend=StorageBackend(storage_backend),
             storage_config=storage_config
         )
-
+        # logger.info(f"会话管理器初始化完成: {storage_backend}, 配置: {storage_config}")
         logger.info(f"会话管理器初始化完成: {storage_backend}")
 
 @router.post("/process_data")
@@ -126,6 +126,23 @@ async def query(request: QueryRequest,
                 business_id=request.business_id
             )
 
+            # 获取上下文
+            _, message_list  = await conversation_manager.get_context_for_query(
+                conversation.id,
+                max_turns=request.max_history,
+                format_type="lightrag"
+            )
+        # TODO: conversation_id没传的情况
+        # else:
+        #     import uuid
+        #     request.conversation_id = str(uuid.uuid4())
+        #     message_list = []
+        #     await conversation_manager.add_message(
+        #         conversation.id,
+        #         "user",
+        #         request.query,
+        #         request.image_base64_list
+        #     )
             # 添加用户消息
             await conversation_manager.add_message(
                 conversation.id,
@@ -134,14 +151,9 @@ async def query(request: QueryRequest,
                 request.image_base64_list
             )
 
-            # 获取上下文
-            _, message_list  = await conversation_manager.get_context_for_query(
-                conversation.id,
-                max_turns=request.max_history,
-                format_type="lightrag"
-            )
 
         if request.streaming:
+            # 添加回复在函数内
             return await _handle_streaming_query(request, core_system, conversation_manager, conversation.id, history=message_list)
         else:
             result =  await _handle_blocking_query(request, core_system, conversation_manager, conversation.id,history=message_list)
@@ -194,6 +206,7 @@ async def _handle_blocking_query(request: QueryRequest,
             mode=request.mode
         )
         result = result_data["result"]
+        # TODO：library_images_count目前全为空
         library_images_count = result_data.get("library_images_count", 0)
     else:
         # 纯文本查询
@@ -295,7 +308,6 @@ async def _handle_streaming_query(request: QueryRequest,
                         "type": "chunk",
                         "content": chunk,
                         "accumulated": accumulated_content,
-                        "conversation_id": conversation_id
                     }
 
                 # 发送SSE格式数据
@@ -304,15 +316,36 @@ async def _handle_streaming_query(request: QueryRequest,
                 # 小延迟，让前端有时间渲染
                 await asyncio.sleep(0.01)
 
+            try:
+                from utils.url_helper import post_process_response_urls
+                processed_content = post_process_response_urls(accumulated_content)
+                accumulated_content = processed_content
+            except Exception as e:
+                logger.warning(f"URL 替换失败: {e}")
+
             await conversation_manager.add_message(
                 conversation_id,
                 role="assistant",
                 content=accumulated_content
             )
+            processed_time = time.time() - start_time
+            # 发送最终的完整内容
+            final_data = {
+                "type": "complete",
+                "content": accumulated_content,
+                "conversation_id": conversation_id,
+                "metadata": {
+                            "user_images_count": len(user_images_base64), # chunk.get("user_images_count", 0),
+                            "library_images_count": 0,
+                            "processing_time": processed_time,
+                            "chunk_count": chunk_count
+                        }
+            }
             # 发送完成信号
+            yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-            logger.info(f"流式查询完成，共 {chunk_count} 个chunk")
+            logger.info(f"流式查询完成，共耗时 {processed_time} s!")
 
         except Exception as e:
             logger.error(f"流式查询失败: {e}")
@@ -358,7 +391,8 @@ async def system_info():
         "models": {
             "llm": settings.llm_model,
             "vision": settings.vision_model,
-            "embedding": settings.embedding_model
+            "embedding": settings.embedding_model,
+            "rerank": settings.rerank.model
         },
         "chinese_prompts": settings.use_chinese_prompts,
         "static_base_url": settings.static_base_url,

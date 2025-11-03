@@ -3,6 +3,17 @@
     "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
     "static_base_url": "http://47.100.14.93:8008",
     "use_chinese_prompts": true,
+    "rerank": {
+        "enabled": false,
+        "model": "gte-rerank-v2",
+        "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+        "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
+        "device": "cpu",
+        "top_n": 5,
+        "score_threshold": 0.5,
+        "use_fp16": true,
+        "max_length": 512
+    },
     "conversation": {
         "enabled": true,
         "storage_backend": "file",
@@ -18,7 +29,11 @@
                 "url": "redis://localhost:6379",
                 "db": 0,
                 "prefix": "lingdou:",
-                "ttl": 2592000
+                "ttl": 2592000,
+                "max_connections": 50,
+                "socket_timeout": 5,
+                "decode_responses": true,
+                "password": null
             }
         }
     },
@@ -49,8 +64,8 @@
         },
         "qwen": {
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "llm_model": "qwen2.5-72b-instruct",
-            "vision_model": "qwen2.5-vl-72b-instruct",
+            "llm_model": "qwen2.5-14b-instruct",
+            "vision_model": "qwen2.5-vl-32b-instruct",
             "embedding_model": "text-embedding-v4",
             "embedding_dim": 1024,
             "max_token_size": 8192

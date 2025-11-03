@@ -12,6 +12,7 @@ import pickle
 from dataclasses import dataclass, asdict, field
 from enum import Enum
 
+from config.settings import settings
 from utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -99,21 +100,31 @@ class Conversation:
         token_count = 0
         turn_count = 0
 
+        # 临时缓存，用来保存成对的 user+assistant
+        pair_buffer = []
+
         for msg in reversed(self.messages):
             # 粗略估算token数（中文约1.5字符=1token）
-            estimated_tokens = len(msg.content) // 1.5
+            estimated_tokens = int(len(msg.content) // 1.5)
 
             if token_count + estimated_tokens > max_tokens:
                 break
 
-            result.insert(0, msg)
+            pair_buffer.insert(0, msg)
             token_count += estimated_tokens
 
-            # 计算轮数
-            if msg.role == "assistant":
+            if msg.role == "user":
                 turn_count += 1
+                # 达到轮次限制则停止
                 if turn_count >= max_turns:
                     break
+                # 将这一对加入结果
+                result = pair_buffer + result
+                pair_buffer = []
+
+                # 如果没满一轮但有剩余，也加进去
+        if pair_buffer:
+            result = pair_buffer + result
 
         return result
 
@@ -219,27 +230,29 @@ class MemoryStorage(ConversationStorage):
 
         return len(to_delete)
 
-
+from asyncio import Lock
 class FileStorage(ConversationStorage):
     """文件存储实现"""
 
     def __init__(self, storage_dir: str = "conversations"):
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = Lock()
 
     def _get_path(self, conversation_id: str) -> Path:
         """获取会话文件路径"""
         return self.storage_dir / f"{conversation_id}.json"
 
     async def save(self, conversation: Conversation) -> bool:
-        try:
-            path = self._get_path(conversation.id)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump(conversation.to_dict(), f, ensure_ascii=False, indent=2)
-            return True
-        except Exception as e:
-            logger.error(f"保存会话失败: {e}")
-            return False
+        async with self._lock:
+            try:
+                path = self._get_path(conversation.id)
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(conversation.to_dict(), f, ensure_ascii=False, indent=2)
+                return True
+            except Exception as e:
+                logger.error(f"保存会话失败: {e}")
+                return False
 
     async def load(self, conversation_id: str) -> Optional[Conversation]:
         try:
@@ -305,21 +318,22 @@ class FileStorage(ConversationStorage):
 
 
 class RedisStorage(ConversationStorage):
+    _redis_pool = None  # 类级别共享连接池
     """Redis存储实现"""
-
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
+    def __init__(self, redis_url: str = settings.conversation.redis_url): # "redis://localhost:6379"
         self.redis_url = redis_url
         self.redis = None
         self.key_prefix = "conversation:"
 
     async def _ensure_connected(self):
         """确保Redis连接"""
-        if not self.redis:
-            self.redis = await aioredis.from_url(
+        if not RedisStorage._redis_pool:
+            RedisStorage._redis_pool = await aioredis.from_url(
                 self.redis_url,
                 encoding="utf-8",
                 decode_responses=False
             )
+        self.redis = RedisStorage._redis_pool
 
     def _get_key(self, conversation_id: str) -> str:
         """获取Redis键"""
@@ -331,8 +345,8 @@ class RedisStorage(ConversationStorage):
             key = self._get_key(conversation.id)
             data = pickle.dumps(conversation)
 
-            # 设置过期时间（30天）
-            await self.redis.setex(key, 30 * 24 * 3600, data)
+            # 设置过期时间（默认30天）
+            await self.redis.setex(key, settings.conversation.redis_ttl, data) # 30 * 24 * 3600=2592000
 
             # 维护索引
             await self._update_index(conversation)
@@ -392,7 +406,12 @@ class RedisStorage(ConversationStorage):
     async def _remove_from_index(self, conversation_id: str):
         """从索引中移除"""
         # 这里简化处理，实际应该先查询会话获取business_id和user_id
-        pass
+        try:
+            # 遍历所有索引键删除（可以优化为根据 metadata 保存索引键）
+            async for key in self.redis.scan_iter(match="index:*"):
+                await self.redis.zrem(key, conversation_id)
+        except Exception as e:
+            logger.warning(f"从索引移除失败: {e}")
 
     async def list_conversations(
             self,
@@ -547,7 +566,7 @@ class ConversationManager:
     async def get_context_for_query(
             self,
             conversation_id: Optional[str],
-            max_turns: int = 5,
+            max_turns: int = settings.conversation.default_max_turns,
             max_tokens: int = 2000,
             format_type: str = "lightrag"
     ) -> Tuple[Optional[str], List[Dict[str, str]]]:
@@ -555,7 +574,7 @@ class ConversationManager:
 
         Args:
             conversation_id: 会话ID
-            max_turns: 最大轮数
+            max_turns: 最大轮数 默认5
             max_tokens: 最大token数
             format_type: 格式化类型 ("lightrag" or "simple")
 
@@ -602,9 +621,9 @@ class ConversationManager:
 
         for i, msg in enumerate(messages):
             if msg.role == "user":
-                context_parts.append(f"用户: {msg.content}")
+                context_parts.append(f"user: {msg.content}")
             else:
-                context_parts.append(f"助手: {msg.content}")
+                context_parts.append(f"assistant: {msg.content}")
 
         context_parts.append("\n请基于上述对话历史，回答用户的新问题。")
 
@@ -614,7 +633,7 @@ class ConversationManager:
         """简单格式化上下文"""
         parts = []
         for msg in messages:
-            role_name = "用户" if msg.role == "user" else "助手"
+            role_name = "user" if msg.role == "user" else "assistant"
             parts.append(f"{role_name}: {msg.content}")
 
         return "\n".join(parts)
@@ -665,7 +684,7 @@ class ConversationManager:
     async def export_conversation(
             self,
             conversation_id: str,
-            format: str = "json"
+            eformat: str = "json"
     ) -> Optional[str]:
         """导出会话"""
         conversation = await self.get_conversation(conversation_id)
@@ -673,9 +692,9 @@ class ConversationManager:
         if not conversation:
             return None
 
-        if format == "json":
+        if eformat == "json":
             return json.dumps(conversation.to_dict(), ensure_ascii=False, indent=2)
-        elif format == "text":
+        elif eformat == "text":
             lines = [
                 f"会话ID: {conversation.id}",
                 f"业务: {conversation.business_id}",
@@ -685,7 +704,7 @@ class ConversationManager:
             ]
 
             for msg in conversation.messages:
-                role_name = "用户" if msg.role == "user" else "助手"
+                role_name = "user" if msg.role == "user" else "assistant"
                 lines.append(f"\n[{role_name}] {msg.timestamp}")
                 lines.append(msg.content)
                 if msg.images:

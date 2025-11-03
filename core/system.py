@@ -294,7 +294,7 @@ class ProductionCoreSystem:
 
         rag = self.rag_instances[business_id]
 
-        async for chunk in rag.aquery_stream(query, mode,history):
+        async for chunk in rag.aquery_stream(query, business_id, mode, history):
             yield chunk
 
     async def query_multimodal_stream(self,
@@ -302,7 +302,7 @@ class ProductionCoreSystem:
                                       query: str,
                                       user_images: List[str] = None,
                                       history=None,
-                                      mode: str = "hybrid"):
+                                      mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid"):
         """
         多模态流式查询
 
@@ -318,7 +318,7 @@ class ProductionCoreSystem:
 
         rag = self.rag_instances[business_id]
 
-        async for chunk in rag.aquery_multimodal_stream(query, user_images, mode,history):
+        async for chunk in rag.aquery_multimodal_stream(query, business_id, user_images, mode, history):
             yield chunk
 
     def get_business_status(self, business_id: str) -> Dict[str, Any]:
