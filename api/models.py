@@ -31,6 +31,7 @@ class QueryResponse(BaseModel):
     result: str
     processing_time: float
     conversation_id: Optional[str] = None
+    images: Optional[list] = []
     user_images_count: Optional[int] = 0
     library_images_count: Optional[int] = 0
 

@@ -157,6 +157,7 @@ async def query(request: QueryRequest,
             return await _handle_streaming_query(request, core_system, conversation_manager, conversation.id, history=message_list)
         else:
             result =  await _handle_blocking_query(request, core_system, conversation_manager, conversation.id,history=message_list)
+
             # 添加回复到历史
             await conversation_manager.add_message(
                 conversation.id,
@@ -165,7 +166,22 @@ async def query(request: QueryRequest,
             )
 
             result.conversation_id = conversation.id
-            return result
+
+            start_time = time.time()
+            result = await core_system.query(request.business_id, request.query, request.mode)
+            processing_time = time.time() - start_time
+            import re
+            pattern = r'http://[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp)'
+            urls = re.findall(pattern, result)
+            images = list({url for url in urls if url})
+            return QueryResponse(
+                success=True,
+                query=request.query,
+                result=result,
+                images=images,
+                processing_time=round(processing_time, 2)
+            )
+            # return result
 
     except Exception as e:
         logger.error(f"查询失败: {e}",exc_info=True)
