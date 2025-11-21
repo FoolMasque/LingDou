@@ -36,6 +36,12 @@ class BusinessConfig:
     name: str
     image_fields: List[str]
     text_fields: List[str]
+    # 定制化配置
+    caption_template: Optional[str] = None  # 自定义图片描述模板
+    caption_fields: Optional[Dict[str, str]] = None  # 字段映射：{显示名: JSON字段名}
+    caption_instructions: Optional[List[str]] = None  # 图片分析指令列表
+    entity_name_field: Optional[str] = None  # 实体名称字段（默认使用第一个text_field或"商品名"）
+    vision_prompt_template: Optional[str] = None  # 自定义视觉分析提示词模板
 
 
 class ImageOptimizer:
@@ -96,6 +102,9 @@ class ImageManager:
     """图片管理器"""
 
     def __init__(self):
+        # ✅ 新目录结构：结构化数据图片存储在 rag_storage_{business_id}/images/
+        # 但为了兼容，仍然使用settings.image_storage作为基础目录
+        # 实际存储路径会在download_images中按business_id创建
         self.download_dir = Path(settings.image_storage)
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.mappings: Dict[str, ImageMapping] = {}
@@ -109,8 +118,21 @@ class ImageManager:
         if not image_urls:
             return {}
 
-        business_dir = self.download_dir / business_id
-        business_dir.mkdir(exist_ok=True)
+        # ✅ 新目录结构：结构化数据图片存储在 rag_storage_{business_id}/images/
+        # 为了统一管理，使用working_dir下的images目录
+        # 确保路径格式正确：./rag_storage_{business_id}/images 或 rag_storage_{business_id}/images
+        if settings.working_dir.startswith('./'):
+            base_dir = Path(settings.working_dir.replace('./', ''))
+        else:
+            base_dir = Path(settings.working_dir)
+        
+        # 如果base_dir是rag_storage，直接拼接business_id
+        if base_dir.name == 'rag_storage':
+            business_dir = base_dir.parent / f"rag_storage_{business_id}" / "images"
+        else:
+            # 否则使用标准格式
+            business_dir = Path(f"./rag_storage_{business_id}") / "images"
+        business_dir.mkdir(parents=True, exist_ok=True)
 
         # 去重URL
         unique_urls = list(set(image_urls))
@@ -133,8 +155,16 @@ class ImageManager:
         for result in results:
             if isinstance(result, ImageMapping):
                 mappings[result.original_url] = result
-                # 注册到全局路径管理器
+                # 注册到全局路径管理器（支持多种路径格式）
                 path_manager.register_mapping(result.local_path, result.remote_url)
+                path_manager.register_mapping(result.local_path.replace('\\', '/'), result.remote_url)
+                # 注册相对路径（相对于项目根目录）
+                try:
+                    project_root = Path(__file__).parent.parent.parent
+                    rel_path = Path(result.local_path).relative_to(project_root)
+                    path_manager.register_mapping(str(rel_path).replace('\\', '/'), result.remote_url)
+                except ValueError:
+                    pass  # 如果路径不在项目根目录下，忽略
 
                 # 记录内容哈希
                 if result.content_hash:
@@ -161,7 +191,9 @@ class ImageManager:
                 file_path = business_dir / filename
 
                 # 构建远程URL
-                remote_url = build_remote_url(business_id, filename)
+                # ✅ 新路径格式：rag_storage_{business_id}/images/{filename}
+                from config.settings import settings
+                remote_url = f"{settings.static_base_url}/images/rag_storage_{business_id}/images/{filename}"
                 local_path_str = str(file_path)
 
                 # 检查文件是否已存在
@@ -233,16 +265,21 @@ class ImageManager:
 class MultiModalProcessor:
     """多模态处理器"""
 
-    def __init__(self, business_id: str):
+    def __init__(self, business_id: str, config: Optional[BusinessConfig] = None):
         self.business_id = business_id
+        self.config = config
 
-        # 导入业务专用的caption构建器
-        try:
-            from config.runtime_prompt_patch import get_business_specific_caption_builder
-            self.caption_builder = get_business_specific_caption_builder(business_id)
-        except ImportError:
-            self.caption_builder = self._build_generic_caption
-            logger.warning(f"未找到业务专用caption构建器，使用通用构建器: {business_id}")
+        # 如果配置中有自定义caption模板，使用自定义构建器
+        if config and config.caption_template:
+            self.caption_builder = self._build_custom_caption
+        else:
+            # 导入业务专用的caption构建器
+            try:
+                from config.runtime_prompt_patch import get_business_specific_caption_builder
+                self.caption_builder = get_business_specific_caption_builder(business_id)
+            except ImportError:
+                self.caption_builder = self._build_generic_caption
+                logger.warning(f"未找到业务专用caption构建器，使用通用构建器: {business_id}")
 
 
 
@@ -363,6 +400,48 @@ class MultiModalProcessor:
             feature_pics = item.get("feature_pics", [])
             if isinstance(feature_pics, list) and idx < len(feature_pics):
                 img_path[img_key] = feature_pics[idx]
+
+    def _build_custom_caption(self, item: Dict[str, Any]) -> str:
+        """使用自定义模板构建图片说明"""
+        if not self.config or not self.config.caption_template:
+            return self._build_generic_caption(item)
+        
+        try:
+            # 构建字段映射
+            field_values = {}
+            if self.config.caption_fields:
+                # 使用配置的字段映射
+                for display_name, json_field in self.config.caption_fields.items():
+                    value = item.get(json_field, "")
+                    if value:
+                        field_values[display_name] = value
+            else:
+                # 使用text_fields作为默认映射
+                for field in (self.config.text_fields or []):
+                    value = item.get(field, "")
+                    if value:
+                        field_values[field] = value
+            
+            # 替换模板中的占位符
+            caption = self.config.caption_template
+            # 支持两种占位符格式：{字段名} 或 {显示名}
+            for key, value in field_values.items():
+                # 替换 {key} 格式
+                caption = caption.replace(f"{{{key}}}", str(value))
+                # 如果caption_fields中有映射，也替换显示名
+                if self.config.caption_fields:
+                    for display_name, json_field in self.config.caption_fields.items():
+                        if json_field == key and display_name != key:
+                            caption = caption.replace(f"{{{display_name}}}", str(value))
+            
+            # 添加分析指令
+            if self.config.caption_instructions:
+                caption += "\n\n" + "\n".join(self.config.caption_instructions)
+            
+            return caption
+        except Exception as e:
+            logger.warning(f"自定义caption构建失败: {e}，使用通用构建器")
+            return self._build_generic_caption(item)
 
     def _build_generic_caption(self, item: Dict[str, Any]) -> str:
         """通用图片说明构建 - 当没有业务专用构建器时使用"""

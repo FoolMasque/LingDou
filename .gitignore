@@ -1,7 +1,8 @@
 /static/
 /logs/
 /lib/
-/rag_storage_furniture/
+/rag_storage_*/
+/conversations/
 /simple-rag-system/
 # Python cache
 __pycache__/

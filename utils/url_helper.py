@@ -54,8 +54,12 @@ class PathManager:
         # 统一使用正斜杠
         normalized = path.replace('\\\\', '/').replace('\\', '/')
 
-        # 处理相对路径
-        if normalized.startswith('../'):
+        # 处理Windows绝对路径（如 D:/path/to/file）
+        # 保留盘符，但统一为正斜杠格式
+        if len(normalized) > 2 and normalized[1] == ':' and normalized[2] == '/':
+            # Windows绝对路径，保持原样（如 D:/path/to/file）
+            pass
+        elif normalized.startswith('../'):
             normalized = normalized[3:]
         elif normalized.startswith('./'):
             normalized = normalized[2:]
@@ -68,7 +72,34 @@ class PathManager:
             # 标准化路径
             normalized = self._normalize_path(local_path)
 
-            # 提取文件名和业务ID
+            # 检查是否是rag_storage下的路径
+            # 格式：rag_storage_{business_id}/parsed/{doc}/images/{filename}
+            # 或：rag_storage_{business_id}/images/{filename}
+            # 支持绝对路径和相对路径
+            if 'rag_storage_' in normalized:
+                # 提取rag_storage_后面的部分作为相对路径
+                # 例如：
+                # - 相对路径：rag_storage_ARglasses/parsed/M400-AR智能眼镜/M400-AR智能眼镜/auto/images/xxx.jpg
+                # - 绝对路径：D:/Dev/myDev/LingDou/rag_storage_ARglasses/parsed/M400-AR智能眼镜/M400-AR智能眼镜/auto/images/xxx.jpg
+                # 转换为：rag_storage_ARglasses/parsed/M400-AR智能眼镜/M400-AR智能眼镜/auto/images/xxx.jpg
+                # URL格式：/images/rag_storage_ARglasses/parsed/M400-AR智能眼镜/M400-AR智能眼镜/auto/images/xxx.jpg
+                
+                # 找到rag_storage_的位置
+                idx = normalized.find('rag_storage_')
+                if idx >= 0:
+                    # 获取rag_storage_后面的所有内容
+                    rel_path = normalized[idx:]
+                    # URL编码中文字符
+                    from urllib.parse import quote
+                    # 对路径中的每个部分进行编码（保留斜杠）
+                    path_parts = rel_path.split('/')
+                    encoded_parts = [quote(part, safe='') for part in path_parts]
+                    encoded_path = '/'.join(encoded_parts)
+                    remote_url = f"{settings.static_base_url}/images/{encoded_path}"
+                    logger.debug(f"构建URL（rag_storage）: {normalized} -> {remote_url}")
+                    return remote_url
+
+            # 旧格式兼容：static/images/business_id/filename
             path_parts = normalized.split('/')
 
             filename = ""
@@ -80,22 +111,39 @@ class PathManager:
                     filename = part
                     break
 
-            # 查找业务ID（通常在images后面或者在路径中）
+            # 查找业务ID（动态提取，不硬编码）
             for i, part in enumerate(path_parts):
-                if part == 'images' and i + 1 < len(path_parts):
-                    business_id = path_parts[i + 1]
-                    break
-                elif part in ['furniture', 'electronics', 'household']:  # 已知业务ID
-                    business_id = part
+                if part == 'images':
+                    # 检查是否是static/images格式
+                    if i > 0 and path_parts[i - 1] == 'static' and i + 1 < len(path_parts):
+                        business_id = path_parts[i + 1]
+                        break
+                    # 检查是否是rag_storage格式：rag_storage_{business_id}/images/...
+                    if i > 0:
+                        prev_part = path_parts[i - 1]
+                        if prev_part.startswith('rag_storage_'):
+                            business_id = prev_part.replace('rag_storage_', '')
+                            break
+                elif part.startswith('rag_storage_'):
+                    # 直接找到rag_storage_{business_id}
+                    business_id = part.replace('rag_storage_', '')
                     break
 
-            # 如果没有找到业务ID，使用默认值
+            # 如果没有找到业务ID，尝试从路径中推断（兼容旧格式）
             if not business_id:
-                business_id = "furniture"  # 默认业务
+                # 检查是否在static/images目录下
+                if 'static' in path_parts and 'images' in path_parts:
+                    idx = path_parts.index('images')
+                    if idx + 1 < len(path_parts):
+                        business_id = path_parts[idx + 1]
+                
+                # 如果还是没找到，使用默认值
+                if not business_id:
+                    business_id = "furniture"  # 默认业务（向后兼容）
 
             if filename:
                 remote_url = f"{settings.static_base_url}/images/{business_id}/{filename}"
-                logger.debug(f"构建URL: {normalized} -> {remote_url}")
+                logger.debug(f"构建URL（旧格式）: {normalized} -> {remote_url}")
                 return remote_url
 
         except Exception as e:
@@ -124,34 +172,96 @@ def post_process_response_urls(response_text: str) -> str:
     if not response_text:
         return response_text
 
-    logger.debug("开始处理响应中的URL...")
+    logger.info("开始处理响应中的URL...")
 
-    # 统一分隔符
+    # 统一分隔符（先处理反斜杠，再处理双反斜杠）
+    # 注意：保留原始文本用于后续处理，但创建标准化版本用于匹配
+    original_text = response_text
     text = response_text.replace('\\\\', '/').replace('\\', '/')
+    
+    # ✅ 关键：先提取所有已经是URL的图片路径，避免重复处理
+    # 匹配所有 http:// 或 https:// 开头的完整URL（包含图片扩展名）
+    url_pattern = re.compile(
+        r'https?://[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp)',
+        re.IGNORECASE
+    )
+    
+    # 找到所有已经是URL的图片路径，并创建保护映射
+    url_matches = {}
+    for match in url_pattern.finditer(text):
+        url = match.group(0)
+        # 为每个URL创建一个唯一标记
+        placeholder = f"__PROTECTED_URL_{len(url_matches)}__"
+        url_matches[placeholder] = url
+    
+    # 用占位符替换所有已存在的URL
+    protected_text = text
+    for placeholder, url in url_matches.items():
+        protected_text = protected_text.replace(url, placeholder)
 
-    # 合并为一个大正则，并禁止匹配到已有 URL（用 (?<!://) 防止命中 http://.../images/... 的 images/... 部分）
+    # 合并为一个大正则，匹配本地路径
+    # 支持多种路径格式：
+    # 1. static/images/business_id/filename
+    # 2. rag_storage_{business_id}/parsed/{doc}/images/filename
+    # 3. rag_storage_{business_id}/images/filename
+    # 4. 绝对路径：D:/path/to/rag_storage_{business_id}/parsed/{doc}/images/filename
+    # ✅ 关键：使用负向后顾断言，确保前面不是 http:// 或 https://
+    # 同时检查前面不是 /images/ 后面跟着 http:// 或 https:// 的情况
     pattern = re.compile(
-        r'''(?<!://)(
-              \.\./static/images/[^/\s)'"\\]+/[^/\s)'"\\]+\.[a-zA-Z]{3,4} |
-              static/images/[^/\s)'"\\]+/[^/\s)'"\\]+\.[a-zA-Z]{3,4}      |
-              \./images/[^/\s)'"\\]+/[^/\s)'"\\]+\.[a-zA-Z]{3,4}          |
-              images/[^/\s)'"\\]+/[^/\s)'"\\]+\.[a-zA-Z]{3,4}             |
-              /[^/\s)'"\\]*static/images/[^/\s)'"\\]+/[^/\s)'"\\]+\.[a-zA-Z]{3,4}
-           )''',
+        r'''(?<!http://)(?<!https://)(?<!://)(
+              \.\./static/images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4} |
+              static/images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4}      |
+              \./images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4}          |
+              images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4}             |
+              /[^\s)\]]*static/images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4} |
+              [A-Za-z]:[^\s)\]]*rag_storage_[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp) |
+              rag_storage_[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp)
+           )(?!://)(?!http://)(?!https://)''',
         re.IGNORECASE | re.VERBOSE
     )
 
     def replace_local_path(m):
         local_path = m.group(1)
+        
+        # ✅ 关键：如果路径已经是完整URL，直接返回，避免重复转换
+        if local_path.startswith(('http://', 'https://')):
+            logger.debug(f"路径已经是URL，跳过转换: {local_path[:80]}...")
+            return local_path
+        
+        # ✅ 额外检查：如果匹配的路径前面有占位符标记，说明它在被保护的URL中，应该跳过
+        start_pos = m.start()
+        if start_pos > 0:
+            # 检查前面是否有占位符（说明这是被保护的URL的一部分）
+            prefix = protected_text[max(0, start_pos - 30):start_pos]
+            if '__PROTECTED_URL_' in prefix:
+                logger.debug(f"路径在被保护的URL中，跳过: {local_path[:80]}...")
+                return local_path
 
+        # 标准化路径（处理绝对路径和相对路径）
+        # 如果是绝对路径（如 D:/path/to/rag_storage_...），需要提取rag_storage_后面的部分
+        normalized_path = local_path.replace('\\', '/')
+        
         # 构造候选键（避免重复加前缀）
-        candidates = [local_path]
-        norm = local_path.lstrip('./')  # 去掉开头的 ./（不去 ../，让它保持一个候选）
-        if local_path != norm:
+        candidates = [local_path, normalized_path]
+        
+        # 如果路径包含rag_storage_，尝试提取相对路径部分
+        if 'rag_storage_' in normalized_path:
+            idx = normalized_path.find('rag_storage_')
+            if idx >= 0:
+                rel_path = normalized_path[idx:]
+                candidates.append(rel_path)
+                # 也尝试去掉开头的 ./ 或 ../
+                if rel_path.startswith('./'):
+                    candidates.append(rel_path[2:])
+                elif rel_path.startswith('../'):
+                    candidates.append(rel_path[3:])
+        
+        norm = normalized_path.lstrip('./')  # 去掉开头的 ./（不去 ../，让它保持一个候选）
+        if normalized_path != norm:
             candidates.append(norm)
 
-        if not local_path.startswith('../') and not local_path.startswith('static/'):
-            candidates.append(f"../{local_path}")
+        if not normalized_path.startswith('../') and not normalized_path.startswith('static/'):
+            candidates.append(f"../{normalized_path}")
         if not norm.startswith('static/'):
             candidates.append(f"static/{norm}")
 
@@ -164,16 +274,31 @@ def post_process_response_urls(response_text: str) -> str:
 
         # 兜底构建
         remote_url = path_manager._build_url_from_path(local_path)
-        logger.debug(f"URL兜底构建: {local_path} -> {remote_url}")
+        logger.info(f"URL兜底构建: {local_path[:100]}... -> {remote_url[:100]}...")
         return remote_url
 
-    # 单次替换，避免后续 pass 重复处理新 URL
-    new_text = pattern.sub(replace_local_path, text)
+    # 在保护后的文本上进行替换
+    processed_text = pattern.sub(replace_local_path, protected_text)
+    
+    # 恢复被保护的URL
+    for placeholder, url in url_matches.items():
+        processed_text = processed_text.replace(placeholder, url)
+    
+    new_text = processed_text
 
-    if new_text != response_text:
-        logger.debug("URL后处理完成，发现并替换了本地路径")
-    else:
-        logger.debug("URL后处理完成，未发现需要替换的本地路径")
+    # if new_text != response_text:
+    #     logger.info("URL后处理完成，发现并替换了本地路径")
+    #     # 显示替换前后的差异（仅显示前200个字符）
+    #     if len(response_text) > 200:
+    #         logger.info(f"替换前（前200字符）: {response_text[:200]}...")
+    #     else:
+    #         logger.info(f"替换前: {response_text}")
+    #     if len(new_text) > 200:
+    #         logger.info(f"替换后（前200字符）: {new_text[:200]}...")
+    #     else:
+    #         logger.info(f"替换后: {new_text}")
+    # else:
+    #     logger.info("URL后处理完成，未发现需要替换的本地路径")
     return new_text
 
 

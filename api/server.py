@@ -16,13 +16,17 @@ project_root = current_file.parent.parent
 # 只添加到Python路径，不改变工作目录
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+
+# ✅ 注意：RAG-Anything不使用WENQUANYI_FONT_PATH环境变量
+# 它会在Windows上自动检测系统字体（SimSun、SimHei、Microsoft YaHei等）
+# 我们只需要确保系统有中文字体即可
+from config.settings import settings
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-
-from config.settings import settings
 from core.system import ProductionCoreSystem
 from core.components import BusinessConfig
 from api.routes import router, Dependencies
@@ -46,7 +50,7 @@ async def lifespan(app: FastAPI):
     core_system = ProductionCoreSystem()
     Dependencies.init(core_system)
 
-    # 注册默认业务
+    # 注册默认业务，不初始化， 懒加载
     try:
         furniture_config = BusinessConfig(
             business_id="furniture",
@@ -76,8 +80,14 @@ async def lifespan(app: FastAPI):
             logger.info(f"业务注册完成: {business.name} ({business.business_id})")
         logger.info(f"所有业务注册完成，共 {len(businesses)} 个业务线")
 
-        # core_system.register_business(furniture_config)
-        # logger.info("默认业务注册完成")
+        # # ✅ 关键：初始化所有 RAG 实例
+        # logger.info("开始初始化所有 RAG 实例...")
+        # for business_id, rag_instance in core_system.rag_instances.items():
+        #     logger.info(f"初始化 {business_id} RAG 实例...")
+        #     await rag_instance.initialize()
+        #     logger.info(f"✅ {business_id} RAG 实例初始化完成")
+        #
+        # logger.info(f"✅ 所有业务注册完成，共 {len(businesses)} 个业务线")
 
     except Exception as e:
         logger.error(f"业务注册失败: {e}")
@@ -91,8 +101,10 @@ async def lifespan(app: FastAPI):
     if core_system:
         for business_id, rag in core_system.rag_instances.items():
             try:
-                if hasattr(rag, 'finalize'):
-                    await rag.finalize()
+                # if hasattr(rag, 'finalize'):
+                #     await rag.finalize()
+                if hasattr(rag, 'cleanup'):
+                    rag.cleanup()
             except Exception as e:
                 logger.error(f"清理业务 {business_id} 失败: {e}")
 
@@ -108,7 +120,7 @@ def get_storage_config():
 
     if backend == "redis":
         config = {
-            "redis_url": os.getenv("REDIS_URL", "redis://localhost:6379"),
+            "redis_url": os.getenv("REDIS_URL", "redis://localhost:16380"),
             "redis_db": int(os.getenv("REDIS_DB", "0")),
             "redis_prefix": os.getenv("REDIS_PREFIX", "lingdou:")
         }
@@ -160,10 +172,14 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# 静态文件服务
-image_dir = Path(settings.image_storage)
-image_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/images", StaticFiles(directory=str(image_dir)), name="images")
+# 静态文件服务 - 支持多种图片路径格式
+# 1. static/images/{business_id}/filename (旧格式，结构化数据)
+# 2. rag_storage_{business_id}/parsed/{doc}/images/filename (新格式，文档解析)
+# 3. rag_storage_{business_id}/images/filename (新格式，结构化数据)
+# 挂载项目根目录，这样可以通过/images/访问所有路径
+# Notes：不再创建static/images目录，现在图片存储在rag_storage_{business_id}目录下
+project_root = Path(__file__).parent.parent
+app.mount("/images", StaticFiles(directory=str(project_root)), name="images")
 
 # 注册路由
 app.include_router(router, prefix="/api")
@@ -220,40 +236,3 @@ def main():
 if __name__ == "__main__":
     # os.environ['OPENAI_API_KEY'] = "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"
     main()
-# if __name__ == "__main__":
-#     import uvicorn
-#     import os
-#
-#     os.environ[
-#         'API_KEY'] = "sk-proj-xxxx"
-#     os.environ['LLM_PROVIDER'] = "openai"
-#
-#     print(f"""
-# === 生产环境家具RAG系统 ===
-#
-# 配置信息:
-# - API提供商: {settings.provider}
-# - LLM模型: {settings.llm_model}
-# - 视觉模型: {settings.vision_model}
-# - 嵌入模型: {settings.embedding_model}
-# - 服务端口: {settings.port}
-# - 图片服务: {settings.static_base_url}
-# - 中文模式: {settings.use_chinese_prompts}
-#
-# 访问地址:
-# - API文档: http://localhost:{settings.port}/docs
-# - 系统信息: http://localhost:{settings.port}/api/system_info
-# - 健康检查: http://localhost:{settings.port}/health
-#
-# 使用示例:
-# curl -X POST "http://localhost:{settings.port}/api/query" \\
-#   -H "Content-Type: application/json" \\
-#   -d '{{"business_id": "furniture", "query": "推荐一个茶桌", "mode": "hybrid"}}'
-# """)
-#
-#     uvicorn.run(
-#         "api.server:app",
-#         host=settings.host,
-#         port=settings.port,
-#         reload=False  # 生产环境关闭自动重载
-#     )

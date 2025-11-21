@@ -3,8 +3,38 @@
     "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
     "static_base_url": "http://47.100.14.93:8008",
     "use_chinese_prompts": true,
+    "rag_anything": {
+        "enabled": true,
+        "use_mineru": true,
+        "parser": "mineru",
+        "parse_method": "auto",
+        "enable_image_processing": true,
+        "enable_formula": false,
+        "enable_table": true,
+        "enable_ocr": true,
+        "smart_parse": true,
+        "max_txt_file_mb": 15,
+        "max_txt_pages": 120,
+        "image_page_ratio_threshold": 0.35,
+        "entity_extract_rounds": 1,
+        "kg_extraction_mode": "adaptive",
+        "kg_extraction_ratio": 0.3,
+        "kg_max_chunks_per_doc": 0,
+        "kg_max_extraction_time": 300,
+        "kg_chunk_selection_strategy": "first",
+        "kg_important_keywords": null,
+        "multimodal_weights": {
+            "image": 1.5,
+            "table": 1.2,
+            "formula": 1.0,
+            "text": 1.0
+        },
+        "backend": null,
+        "lang": "ch",
+        "chinese_font_path": null
+    },
     "rerank": {
-        "enabled": false,
+        "enabled": true,
         "model": "gte-rerank-v2",
         "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
         "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
@@ -16,7 +46,7 @@
     },
     "conversation": {
         "enabled": true,
-        "storage_backend": "file",
+        "storage_backend": "redis",
         "default_max_turns": 5,
         "default_max_tokens": 2000,
         "cache_size": 100,
@@ -26,7 +56,7 @@
                 "storage_dir": "conversations"
             },
             "redis": {
-                "url": "redis://localhost:6379",
+                "url": "redis://localhost:16380",
                 "db": 0,
                 "prefix": "lingdou:",
                 "ttl": 2592000,

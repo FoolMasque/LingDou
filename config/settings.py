@@ -4,9 +4,12 @@
 """
 import os
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional, Literal
+from typing import Dict, Any, Optional, Literal, List
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -23,8 +26,10 @@ class ConversationConfig:
     file_storage_dir: str = "conversations"
 
     # Redis 存储配置
-    redis_url: str = "redis://localhost:6379"
-    redis_db: int = 0
+    # 默认连接到独立的Redis容器（端口16380）
+    # 如果应用在Docker中，可以通过环境变量REDIS_URL覆盖
+    redis_url: str = "redis://localhost:16380"
+    redis_db: int = 0  # 使用独立的Redis容器，可以使用db 0
     redis_prefix: str = "lingdou:"
     redis_ttl: int = 2592000  # 30天
     redis_max_connections: int = 50
@@ -45,6 +50,46 @@ class RerankConfig:
     score_threshold: float = 0.5
     use_fp16: bool = False
     max_length: int = 512
+
+@dataclass
+class RAGAnythingConfig:
+    """RAGAnything 配置"""
+    enabled: bool = True
+    use_mineru: bool = True
+    parse_method: str = "auto"  # auto/ocr/txt
+    parser: str = "mineru"
+    enable_formula: bool = True
+    enable_table: bool = True
+    enable_ocr: bool = True
+    chunk_size: int = 3000
+    chunk_overlap: int = 150
+    enable_image_processing: bool = False
+    smart_parse: bool = True
+    text_density_threshold: int = 700  # 平均每页字符数阈值
+    min_text_chars: int = 200  # 将页面视作文本页的最小字符数
+    sample_page_limit: int = 6  # 采样页数量
+    max_txt_pages: int = 80  # 当页数过大时仍使用mineru
+    max_txt_file_mb: float = 15.0  # 文件过大时启用mineru
+    image_page_ratio_threshold: float = 0.3  # 图片页占比阈值
+    entity_extract_rounds: int = 1
+    # 知识图谱抽取策略配置
+    kg_extraction_mode: str = "adaptive"  # adaptive（自适应）/ratio（比例）/limit（限制数量）/all（全部）
+    kg_extraction_ratio: float = 0.3  # 抽取比例（0.0-1.0），当mode=ratio时生效
+    kg_max_chunks_per_doc: int = 0  # 每个文档最多抽取的chunk数（0=不限制），当mode=limit时生效
+    kg_max_extraction_time: int = 300  # 最大抽取时间（秒），当mode=adaptive时，超过此时间停止抽取
+    kg_chunk_selection_strategy: str = "first"  # 选择策略：first（前N个）/random（随机N个）/important（重要chunk，基于关键词）
+    kg_important_keywords: Optional[List[str]] = None  # 重要chunk的关键词列表，当strategy=important时使用
+    # 多模态内容权重配置（用于关系抽取和实体重要性评估）
+    multimodal_weights: Optional[Dict[str, float]] = field(default_factory=lambda: {
+        "image": 1.5,
+        "table": 1.2,
+        "formula": 1.0,
+        "text": 1.0
+    })  # 格式：{"image": 1.5, "table": 1.2, "formula": 1.0, "text": 1.0}
+    backend: Optional[str] = None
+    lang: Optional[str] = None
+    # 字体配置（用于文本转PDF时的中文字体）
+    chinese_font_path: Optional[str] = None  # 如果为None，将自动检测Windows系统字体
 
 @dataclass
 class SystemConfig:
@@ -88,6 +133,9 @@ class SystemConfig:
 
     # Rerank 配置
     rerank: RerankConfig = field(default_factory=RerankConfig)
+    
+    # RAG-Anything 配置
+    rag_anything: RAGAnythingConfig = field(default_factory=RAGAnythingConfig)
 
     # 模型提供商配置映射
     provider_configs: Dict[str, Dict[str, Any]] = field(default_factory=lambda: {
@@ -178,6 +226,8 @@ class SystemConfig:
                         elif key == 'provider_configs':
                             # 更新提供商配置
                             config.provider_configs.update(value)
+                        elif key == 'rag_anything':
+                            config.rag_anything = cls._load_rag_anything_config(value)
                         elif hasattr(config, key):
                             setattr(config, key, value)
                     # 更新提供商配置
@@ -195,6 +245,17 @@ class SystemConfig:
             for key, value in provider_config.items():
                 if not getattr(config, key, None) or getattr(config, key) == getattr(cls(), key):
                     setattr(config, key, value)
+        
+        # 4. 确保 rag_anything 配置已加载（如果 config.json 中没有，使用默认值）
+        if not hasattr(config, 'rag_anything') or config.rag_anything is None:
+            config.rag_anything = RAGAnythingConfig()
+        
+        # 5. 自动检测中文字体（如果未配置）
+        if config.rag_anything.chinese_font_path is None:
+            detected_font = cls._detect_chinese_font()
+            if detected_font:
+                config.rag_anything.chinese_font_path = detected_font
+                logger.info(f"自动检测到中文字体: {detected_font}")
 
         return config
 
@@ -244,6 +305,28 @@ class SystemConfig:
             if hasattr(rerank_config, key):
                 setattr(rerank_config, key, value)
         return rerank_config
+
+    @staticmethod
+    def _load_rag_anything_config(config_dict: Dict[str, Any]) -> RAGAnythingConfig:
+        rag_config = RAGAnythingConfig()
+
+        for key, value in config_dict.items():
+            if hasattr(rag_config, key):
+                setattr(rag_config, key, value)
+            else:
+                print(f"未知的 rag_anything 配置项: {key}")
+                # logger.warning(f"未知的 rag_anything 配置项: {key}")
+
+        # 自动检测中文字体（如果未配置）
+        if rag_config.chinese_font_path is None:
+            detected_font = SystemConfig._detect_chinese_font()
+            if detected_font:
+                rag_config.chinese_font_path = detected_font
+                logger.info(f"[_load_rag_anything_config] 自动检测到中文字体: {detected_font}")
+            else:
+                logger.warning("[_load_rag_anything_config] 未检测到中文字体，TXT文件中的中文可能显示为黑框")
+        
+        return rag_config
 
     def _load_from_env(self):
         """从环境变量加载配置"""
@@ -303,6 +386,115 @@ class SystemConfig:
                 elif attr_name == "top_n":
                     env_value = int(env_value)
                 setattr(self.rerank, attr_name, env_value)
+
+    @staticmethod
+    def _detect_chinese_font() -> Optional[str]:
+        """
+        自动检测系统中文字体路径（支持Windows和Linux）
+        
+        RAG-Anything使用WENQUANYI_FONT_PATH环境变量，但我们也支持其他中文字体
+        优先查找WenQuanYi字体，如果没有则查找其他中文字体
+        """
+        import platform
+        import glob
+        
+        system = platform.system()
+        logger.info(f"检测到{system}系统")
+        
+        try:
+            # Windows系统
+            if system == "Windows":
+                windir = os.environ.get("WINDIR", "C:\\Windows")
+                fonts_dir = os.path.join(windir, "Fonts")
+                
+                # 优先使用的字体列表（按优先级排序）
+                preferred_fonts = [
+                    "msyh.ttc",      # 微软雅黑（最常用）
+                    "simsun.ttc",    # 宋体
+                    "simhei.ttf",    # 黑体
+                    "simkai.ttf",    # 楷体
+                ]
+                
+                # 查找字体文件
+                for font_name in preferred_fonts:
+                    font_path = os.path.join(fonts_dir, font_name)
+                    if os.path.exists(font_path):
+                        logger.info(f"检测到Windows中文字体: {font_path}")
+                        return font_path
+                
+                # 如果找不到优先字体，尝试查找任何中文字体
+                for ext in ["*.ttc", "*.ttf"]:
+                    fonts = glob.glob(os.path.join(fonts_dir, ext))
+                    for font_path in fonts:
+                        font_name = os.path.basename(font_path).lower()
+                        if any(keyword in font_name for keyword in ["sim", "msyh", "song", "hei", "kai"]):
+                            logger.info(f"检测到Windows中文字体: {font_path}")
+                            return font_path
+            
+            # Linux系统
+            elif system == "Linux":
+                # Linux常见字体目录
+                font_dirs = [
+                    "/usr/share/fonts",           # 系统字体目录
+                    "/usr/share/fonts/truetype",  # TrueType字体
+                    "/usr/share/fonts/opentype",  # OpenType字体
+                    "/usr/local/share/fonts",     # 本地字体目录
+                    os.path.expanduser("~/.fonts"),  # 用户字体目录
+                    os.path.expanduser("~/.local/share/fonts"),  # 用户本地字体
+                ]
+                
+                # 优先查找WenQuanYi字体（RAG-Anything默认使用）
+                wenquanyi_paths = [
+                    "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+                    "/usr/share/fonts/wqy-zenhei/wqy-zenhei.ttc",
+                    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                ]
+                
+                for font_path in wenquanyi_paths:
+                    if os.path.exists(font_path):
+                        logger.info(f"检测到Linux WenQuanYi字体: {font_path}")
+                        return font_path
+                
+                # 查找其他中文字体
+                chinese_font_keywords = ["wqy", "noto-cjk", "source-han", "droid", "arphic", "ukai", "uming"]
+                
+                for font_dir in font_dirs:
+                    if not os.path.exists(font_dir):
+                        continue
+                    
+                    # 递归查找字体文件
+                    for root, dirs, files in os.walk(font_dir):
+                        for file in files:
+                            if file.lower().endswith(('.ttf', '.ttc', '.otf')):
+                                file_lower = file.lower()
+                                if any(keyword in file_lower for keyword in chinese_font_keywords):
+                                    font_path = os.path.join(root, file)
+                                    logger.info(f"检测到Linux中文字体: {font_path}")
+                                    return font_path
+                
+                # 如果都找不到，尝试使用fc-list查找（需要fontconfig）
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ["fc-list", ":lang=zh", "file"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0 and result.stdout:
+                        # 取第一行字体路径
+                        first_line = result.stdout.strip().split('\n')[0]
+                        if first_line and os.path.exists(first_line):
+                            logger.info(f"通过fc-list检测到中文字体: {first_line}")
+                            return first_line
+                except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                    pass
+            
+        except Exception as e:
+            logger.warning(f"检测中文字体失败: {e}")
+        
+        return None
 
 # 全局配置实例
 settings = SystemConfig.load_config()

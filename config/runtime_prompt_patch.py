@@ -294,9 +294,11 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. Image Presentation:
   - If product-related images are available in the **Context**, include **1–2 representative images per product** in the response output.
+  - **IMPORTANT**: Use the image path from the chunk content (e.g., "ImagePath/图片路径：rag_storage_furniture/images/xxx.jpg"), NOT from file_path or any other metadata fields.
   - Each image should be shown using Markdown image syntax, for example:  
     `![Product Name](image_url)`
-  - Select images that best represent the product’s appearance or key features. Avoid duplicating similar images.
+  - The image_url should be the actual path found in the chunk content, such as "rag_storage_furniture/images/xxx.jpg" or ".\\rag_storage_ARglasses\\parsed\\M400-AR智能眼镜\\M400-AR智能眼镜\\auto\\images\\xx.png".
+  - Select images that best represent the product's appearance or key features. Avoid duplicating similar images.
     
 5. Additional Instructions: {user_prompt}
 

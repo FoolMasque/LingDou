@@ -24,12 +24,20 @@ class ProductionCoreSystem:
         self.rag_instances: Dict[str, ProductionRAGInstance] = {}
         self.processors: Dict[str, MultiModalProcessor] = {}
 
+        self._init_locks: Dict[str, asyncio.Lock] = {} # 初始化锁（避免并发初始化）
+
+        # 业务配置持久化文件路径
+        self.business_config_file = Path("./data/business_configs.json")
+
         # 直接初始化组件
         self.image_manager = ImageManager()
 
         # 并发控制
         self.max_concurrent_items = 5  # 同时处理的最大商品数
         self.processing_semaphore = asyncio.Semaphore(self.max_concurrent_items)
+
+        # 加载已保存的业务配置
+        self._load_business_configs()
 
         logger.info(f"系统初始化完成，配置: provider={settings.provider}, model={settings.llm_model}")
 
@@ -39,13 +47,45 @@ class ProductionCoreSystem:
         # 创建生产RAG实例
         self.rag_instances[config.business_id] = ProductionRAGInstance(config.business_id)
         # 直接创建处理器
-        self.processors[config.business_id] = MultiModalProcessor(config.business_id)
+        self.processors[config.business_id] = MultiModalProcessor(config.business_id, config=config)
+        # 创建初始化锁
+        self._init_locks[config.business_id] = asyncio.Lock()
+        
+        # 保存业务配置到文件
+        self._save_business_configs()
+        
         logger.info(f"业务注册成功: {config.name}")
+
+    async def _ensure_rag_initialized(self, business_id: str):
+        """
+        确保RAG实例已初始化（懒加载）
+
+        使用锁避免并发初始化同一个实例
+        """
+        if business_id not in self.rag_instances:
+            raise ValueError(f"未注册的业务: {business_id}")
+
+        rag_instance = self.rag_instances[business_id]
+
+        # 如果已经初始化，直接返回
+        if rag_instance.initialized:
+            return
+
+        # 使用锁避免并发初始化
+        async with self._init_locks[business_id]:
+            # 双重检查（进入锁后再检查一次）
+            if rag_instance.initialized:
+                return
+
+            logger.info(f"🔄 首次使用 {business_id}，开始初始化 RAG 实例...")
+            await rag_instance.initialize()
+            logger.info(f"✅ {business_id} RAG 实例初始化完成")
 
     async def process_crawler_data(self, business_id: str, json_file: str):
         """处理爬虫数据"""
         if business_id not in self.businesses:
             raise ValueError(f"未注册的业务: {business_id}")
+        await self._ensure_rag_initialized(business_id)
         async with aiofiles.open(json_file, 'r', encoding='utf-8') as f:
             content = await f.read()
             data = json.loads(content)
@@ -123,7 +163,28 @@ class ProductionCoreSystem:
         """处理单个商品 - 带并发控制"""
         async with self.processing_semaphore:
             try:
-                entity_name = item.get("商品名", f"商品_{index}")
+                # 获取实体名称字段（优先使用配置的字段）
+                business_config = self.businesses.get(business_id)
+                entity_name_field = None
+                if business_config and business_config.entity_name_field:
+                    entity_name_field = business_config.entity_name_field
+                elif business_config and business_config.text_fields:
+                    entity_name_field = business_config.text_fields[0]  # 使用第一个文本字段
+                
+                # 尝试多个可能的字段名
+                entity_name = None
+                if entity_name_field:
+                    entity_name = item.get(entity_name_field)
+                
+                if not entity_name:
+                    # 降级：尝试常见字段名
+                    for field in ["商品名", "produce", "name", "title", "产品名"]:
+                        if field in item:
+                            entity_name = item[field]
+                            break
+                
+                if not entity_name:
+                    entity_name = f"商品_{index}"
 
                 # 更新item中的图片URL为本地路径（用于处理）
                 self._update_item_with_mappings(item, image_mappings)
@@ -229,10 +290,11 @@ class ProductionCoreSystem:
             history = field(default_factory=list)
         if business_id not in self.rag_instances:
             raise ValueError(f"未注册的业务: {business_id}")
+        await self._ensure_rag_initialized(business_id)
 
         rag = self.rag_instances[business_id]
-        # result = await rag.aquery(query, mode)
-        result = await rag.aquery_with_history(query=query, mode=mode,history=history)
+        logger.info(f"[{business_id}] 执行查询，模式: {mode}, 历史记录数: {len(history) if history else 0}")
+        result = await rag.aquery_with_history(query=query, mode=mode, history=history)
 
         return result
 
@@ -261,6 +323,7 @@ class ProductionCoreSystem:
             history = field(default_factory=list)
         if business_id not in self.rag_instances:
             raise ValueError(f"未注册的业务: {business_id}")
+        await self._ensure_rag_initialized(business_id)
 
         rag = self.rag_instances[business_id]
 
@@ -291,6 +354,7 @@ class ProductionCoreSystem:
             history = field(default_factory=list)
         if business_id not in self.rag_instances:
             raise ValueError(f"未注册的业务: {business_id}")
+        await self._ensure_rag_initialized(business_id)
 
         rag = self.rag_instances[business_id]
 
@@ -315,6 +379,7 @@ class ProductionCoreSystem:
             history = field(default_factory=list)
         if business_id not in self.rag_instances:
             raise ValueError(f"未注册的业务: {business_id}")
+        await self._ensure_rag_initialized(business_id)
 
         rag = self.rag_instances[business_id]
 
@@ -345,3 +410,74 @@ class ProductionCoreSystem:
             "chinese_prompts": settings.use_chinese_prompts,
             "image_mappings": len(self.image_manager.mappings)
         }
+    
+    def _save_business_configs(self):
+        """保存业务配置到文件"""
+        try:
+            # 确保目录存在
+            self.business_config_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 将BusinessConfig转换为字典
+            configs_dict = {}
+            for business_id, config in self.businesses.items():
+                configs_dict[business_id] = {
+                    "business_id": config.business_id,
+                    "name": config.name,
+                    "image_fields": config.image_fields,
+                    "text_fields": config.text_fields,
+                    "caption_template": config.caption_template,
+                    "caption_fields": config.caption_fields,
+                    "caption_instructions": config.caption_instructions,
+                    "entity_name_field": config.entity_name_field,
+                    "vision_prompt_template": config.vision_prompt_template
+                }
+            
+            # 保存到文件
+            with open(self.business_config_file, 'w', encoding='utf-8') as f:
+                json.dump(configs_dict, f, ensure_ascii=False, indent=2)
+            
+            logger.debug(f"业务配置已保存: {len(configs_dict)} 个业务")
+        except Exception as e:
+            logger.error(f"保存业务配置失败: {e}", exc_info=True)
+    
+    def _load_business_configs(self):
+        """从文件加载业务配置"""
+        try:
+            if not self.business_config_file.exists():
+                logger.info("业务配置文件不存在，跳过加载")
+                return
+            
+            with open(self.business_config_file, 'r', encoding='utf-8') as f:
+                configs_dict = json.load(f)
+            
+            # 加载业务配置
+            loaded_count = 0
+            for business_id, config_data in configs_dict.items():
+                try:
+                    config = BusinessConfig(
+                        business_id=config_data["business_id"],
+                        name=config_data["name"],
+                        image_fields=config_data.get("image_fields", []),
+                        text_fields=config_data.get("text_fields", []),
+                        caption_template=config_data.get("caption_template"),
+                        caption_fields=config_data.get("caption_fields"),
+                        caption_instructions=config_data.get("caption_instructions"),
+                        entity_name_field=config_data.get("entity_name_field"),
+                        vision_prompt_template=config_data.get("vision_prompt_template")
+                    )
+                    
+                    # 注册业务（但不保存，避免循环）
+                    self.businesses[config.business_id] = config
+                    self.rag_instances[config.business_id] = ProductionRAGInstance(config.business_id)
+                    self.processors[config.business_id] = MultiModalProcessor(config.business_id, config=config)
+                    self._init_locks[config.business_id] = asyncio.Lock()
+                    
+                    loaded_count += 1
+                    logger.info(f"✅ 已加载业务配置: {config.name} ({business_id})")
+                except Exception as e:
+                    logger.error(f"加载业务配置失败 {business_id}: {e}", exc_info=True)
+            
+            if loaded_count > 0:
+                logger.info(f"✅ 从文件加载了 {loaded_count} 个业务配置")
+        except Exception as e:
+            logger.error(f"加载业务配置文件失败: {e}", exc_info=True)
