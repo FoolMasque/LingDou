@@ -24,9 +24,11 @@ from config.settings import settings
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import unquote
+import mimetypes
 from core.system import ProductionCoreSystem
 from core.components import BusinessConfig
 from api.routes import router, Dependencies
@@ -172,14 +174,75 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# 静态文件服务 - 支持多种图片路径格式
+# 静态文件服务 - 支持多种图片路径格式和URL编码的中文路径
 # 1. static/images/{business_id}/filename (旧格式，结构化数据)
 # 2. rag_storage_{business_id}/parsed/{doc}/images/filename (新格式，文档解析)
 # 3. rag_storage_{business_id}/images/filename (新格式，结构化数据)
-# 挂载项目根目录，这样可以通过/images/访问所有路径
+# 
+# 使用自定义路由而不是StaticFiles，因为StaticFiles不支持URL编码的中文路径
 # Notes：不再创建static/images目录，现在图片存储在rag_storage_{business_id}目录下
 project_root = Path(__file__).parent.parent
-app.mount("/images", StaticFiles(directory=str(project_root)), name="images")
+
+@app.get("/images/{file_path:path}")
+async def serve_image(file_path: str):
+    """
+    自定义图片服务端点，支持URL编码的中文路径
+    
+    支持路径格式：
+    1. rag_storage_{business_id}/parsed/{doc}/images/{filename}
+    2. rag_storage_{business_id}/images/{filename}
+    3. static/images/{business_id}/{filename}
+    
+    Args:
+        file_path: 图片路径（支持URL编码的中文字符）
+    
+    Returns:
+        FileResponse: 图片文件响应
+    """
+    try:
+        # ✅ 关键：URL解码路径（处理中文字符）
+        # 例如：M400-AR%E6%99%BA%E8%83%BD%E7%9C%BC%E9%95%9C -> M400-AR智能眼镜
+        decoded_path = unquote(file_path)
+        
+        # 构建完整文件路径
+        file_full_path = project_root / decoded_path
+        
+        # 安全检查：确保文件在项目根目录下（防止路径遍历攻击）
+        try:
+            file_full_path.resolve().relative_to(project_root.resolve())
+        except ValueError:
+            logger.warning(f"非法路径访问尝试: {decoded_path}")
+            raise HTTPException(status_code=403, detail="访问被拒绝：文件不在项目目录内")
+        
+        # 检查文件是否存在
+        if not file_full_path.exists():
+            logger.debug(f"图片文件不存在: {file_full_path}")
+            raise HTTPException(status_code=404, detail=f"文件不存在: {decoded_path}")
+        
+        # 检查是否是文件（不是目录）
+        if not file_full_path.is_file():
+            logger.debug(f"路径不是文件: {file_full_path}")
+            raise HTTPException(status_code=404, detail="路径不是文件")
+        
+        # 根据文件扩展名判断媒体类型
+        media_type, _ = mimetypes.guess_type(str(file_full_path))
+        if not media_type:
+            # 默认使用 image/jpeg，如果无法判断
+            if file_full_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                media_type = f"image/{file_full_path.suffix.lower().lstrip('.')}"
+            else:
+                media_type = "application/octet-stream"
+        
+        # 返回文件
+        return FileResponse(
+            str(file_full_path),
+            media_type=media_type
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"图片服务错误: {file_path}, 错误: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"服务器错误: {str(e)}")
 
 # 注册路由
 app.include_router(router, prefix="/api")

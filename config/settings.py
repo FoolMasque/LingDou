@@ -184,7 +184,7 @@ class SystemConfig:
         """获取当前存储后端的配置"""
         if self.conversation.storage_backend == "redis":
             return {
-                "url": self.conversation.redis_url,
+                "redis_url": self.conversation.redis_url,
                 "db": self.conversation.redis_db,
                 "prefix": self.conversation.redis_prefix,
                 "ttl": self.conversation.redis_ttl,
