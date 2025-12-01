@@ -39,8 +39,8 @@
         "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
         "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
         "device": "cpu",
-        "top_n": 5,
-        "score_threshold": 0.5,
+        "top_n": 10,
+        "score_threshold": 0.0,
         "use_fp16": true,
         "max_length": 512
     },

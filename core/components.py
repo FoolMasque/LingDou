@@ -262,6 +262,11 @@ class ImageManager:
 
         return content_groups
 
+from collections import UserDict
+class SafeDict(UserDict):
+    def __missing__(self, key):
+        return ""
+
 class MultiModalProcessor:
     """多模态处理器"""
 
@@ -402,42 +407,41 @@ class MultiModalProcessor:
                 img_path[img_key] = feature_pics[idx]
 
     def _build_custom_caption(self, item: Dict[str, Any]) -> str:
-        """使用自定义模板构建图片说明"""
+        """使用自定义模板构建图片说明（稳健替换显示名与json字段名）"""
         if not self.config or not self.config.caption_template:
             return self._build_generic_caption(item)
-        
+
         try:
-            # 构建字段映射
-            field_values = {}
+            # 构建字段映射：同时写入 display_name 和 json_field 两种 key
+            field_values: Dict[str, Any] = {}
+
             if self.config.caption_fields:
-                # 使用配置的字段映射
+                # caption_fields: { "显示名": "json_field" }
                 for display_name, json_field in self.config.caption_fields.items():
                     value = item.get(json_field, "")
                     if value:
-                        field_values[display_name] = value
+                        field_values[display_name] = value  # 用显示名替换 {产品名}
+                        field_values[json_field] = value  # 用 json 字段名替换 {produce}
             else:
-                # 使用text_fields作为默认映射
+                # 没有显式映射时，用 text_fields 列表作为 json 字段名
                 for field in (self.config.text_fields or []):
                     value = item.get(field, "")
                     if value:
                         field_values[field] = value
-            
-            # 替换模板中的占位符
+
+            # 额外把 item 中常见字段也放入，增加容错
+            for k, v in item.items():
+                if isinstance(k, str) and k not in field_values:
+                    field_values[k] = v
+
+            # 使用安全字典替换模板中的占位符（避免 KeyError）
             caption = self.config.caption_template
-            # 支持两种占位符格式：{字段名} 或 {显示名}
-            for key, value in field_values.items():
-                # 替换 {key} 格式
-                caption = caption.replace(f"{{{key}}}", str(value))
-                # 如果caption_fields中有映射，也替换显示名
-                if self.config.caption_fields:
-                    for display_name, json_field in self.config.caption_fields.items():
-                        if json_field == key and display_name != key:
-                            caption = caption.replace(f"{{{display_name}}}", str(value))
-            
-            # 添加分析指令
+            caption = caption.format_map(SafeDict(field_values))
+
+            # 添加分析指令（若有）
             if self.config.caption_instructions:
-                caption += "\n\n" + "\n".join(self.config.caption_instructions)
-            
+                caption = caption + "\n\n" + "\n".join(self.config.caption_instructions)
+
             return caption
         except Exception as e:
             logger.warning(f"自定义caption构建失败: {e}，使用通用构建器")

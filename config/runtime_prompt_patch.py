@@ -145,7 +145,10 @@ def verify_chinese_prompts():
 
 
 def get_business_specific_caption_builder(business_id: str):
-    """根据业务ID获取专用的caption构建器"""
+    """
+    业务内置
+    根据业务ID获取专用的caption构建器
+    """
 
     builders = {
         "furniture": _build_furniture_caption,
@@ -178,7 +181,8 @@ def _build_furniture_caption(item: dict) -> str:
         "1. 材质工艺和质感特征",
         "2. 设计风格和美学元素",
         "3. 功能特点和使用场景",
-        "4. 尺寸规格和空间适配性"
+        "4. 尺寸规格和空间适配性",
+        "5. 如图像中存在产品描述文本，请提取此部分内容"
     ])
 
     return "\n".join(caption_parts)
@@ -189,12 +193,10 @@ def _build_toilet_caption(item: dict) -> str:
     caption_parts = ["以下是该马桶商品的已知信息："]
 
     key_fields = {
-        "品牌": item.get("品牌", ""),
-        "型号": item.get("型号", ""),
-        "商品名": item.get("商品名", ""),
-        "功能": item.get("功能", ""),
-        "规格": item.get("规格", ""),
-        "适用场景": item.get("适用场景", ""),
+        "品牌": item.get("type", ""),
+        "型号": item.get("cls", ""),
+        "商品名": item.get("produce", ""),
+        "商品标题": item.get("subtitle", ""),
         "关键词": item.get("keyword", "")
     }
 
@@ -208,7 +210,8 @@ def _build_toilet_caption(item: dict) -> str:
         "1. 外观设计和材质（陶瓷、表面处理等）",
         "2. 功能特点（冲洗方式、节水技术、智能功能等）",
         "3. 安装规格（坑距、尺寸、重量等）",
-        "4. 使用体验（舒适度、操作便利性等）"
+        "4. 使用体验（舒适度、操作便利性等）",
+        "5. 如图像中存在产品描述文本，请提取此部分内容"
     ])
 
     return "\n".join(caption_parts)
@@ -237,7 +240,8 @@ def _build_electronics_caption(item: dict) -> str:
         "1. 外观设计和做工品质",
         "2. 技术特点和创新功能",
         "3. 操作界面和使用便利性",
-        "4. 适用场景和性能表现"
+        "4. 适用场景和性能表现",
+        "5. 如图像中存在产品描述文本，请提取此部分内容"
     ])
 
     return "\n".join(caption_parts)
@@ -261,7 +265,8 @@ def _build_generic_caption(item: dict) -> str:
         "1. 外观设计和材质特征",
         "2. 功能特点和技术亮点",
         "3. 使用场景和适用性",
-        "4. 品质和工艺表现"
+        "4. 品质和工艺表现",
+        "5. 如图像中存在产品描述文本，请提取此部分内容"
     ])
 
     return "\n".join(caption_parts)

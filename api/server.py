@@ -17,8 +17,8 @@ project_root = current_file.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# ✅ 注意：RAG-Anything不使用WENQUANYI_FONT_PATH环境变量
-# 它会在Windows上自动检测系统字体（SimSun、SimHei、Microsoft YaHei等）
+
+# 在Windows上自动检测系统字体（SimSun、SimHei、Microsoft YaHei等）
 # 我们只需要确保系统有中文字体即可
 from config.settings import settings
 
@@ -117,27 +117,11 @@ async def lifespan(app: FastAPI):
 
 def get_storage_config():
     """获取存储配置"""
-    backend = os.getenv("CONVERSATION_STORAGE", "file").lower()
-    config = {}
-
-    if backend == "redis":
-        config = {
-            "redis_url": os.getenv("REDIS_URL", "redis://localhost:16380"),
-            "redis_db": int(os.getenv("REDIS_DB", "0")),
-            "redis_prefix": os.getenv("REDIS_PREFIX", "lingdou:")
-        }
-    elif backend == "file":
-        config = {
-            "storage_dir": os.getenv("CONVERSATION_DIR", "conversations")
-        }
-    elif backend == "memory":
-        logger.warning("⚠️  使用内存存储，重启后会话将丢失！")
-
+    backend = settings.conversation.storage_backend
     return {
         "backend": backend,
-        "config": config
+        "config": settings.get_storage_config()
     }
-
 
 # ==================== 定期任务 ====================
 
@@ -200,7 +184,7 @@ async def serve_image(file_path: str):
         FileResponse: 图片文件响应
     """
     try:
-        # ✅ 关键：URL解码路径（处理中文字符）
+        # URL解码路径（处理中文字符）
         # 例如：M400-AR%E6%99%BA%E8%83%BD%E7%9C%BC%E9%95%9C -> M400-AR智能眼镜
         decoded_path = unquote(file_path)
         
@@ -260,9 +244,9 @@ async def health_check():
 
 def main():
     """主函数"""
-    # TODO：需要从配置文件中读取
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8008"))
+    host = settings.host
+    port = settings.port
+    # reload 和 workers 是运行时参数，保留从环境变量读取
     reload = os.getenv("RELOAD", "false").lower() == "true"
     workers = int(os.getenv("WORKERS", "1"))
 
@@ -299,3 +283,28 @@ def main():
 if __name__ == "__main__":
     # os.environ['OPENAI_API_KEY'] = "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"
     main()
+
+# DEBUG用
+# import asyncio
+# import uvicorn
+#
+# def debug_main():
+#     config = uvicorn.Config(
+#         app="api.server:app",
+#         host="0.0.0.0",
+#         port=8008,
+#         reload=False,
+#         log_level="info",
+#     )
+#     server = uvicorn.Server(config)
+#
+#     # 手动创建事件循环，避免 PyCharm patch 冲突
+#     loop = asyncio.new_event_loop()
+#     asyncio.set_event_loop(loop)
+#
+#     loop.run_until_complete(server.serve())
+#     loop.close()
+#
+#
+# if __name__ == "__main__":
+#     debug_main()

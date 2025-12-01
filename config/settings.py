@@ -26,7 +26,6 @@ class ConversationConfig:
     file_storage_dir: str = "conversations"
 
     # Redis 存储配置
-    # 默认连接到独立的Redis容器（端口16380）
     # 如果应用在Docker中，可以通过环境变量REDIS_URL覆盖
     redis_url: str = "redis://localhost:16380"
     redis_db: int = 0  # 使用独立的Redis容器，可以使用db 0
@@ -47,7 +46,7 @@ class RerankConfig:
     api_key: str = ""
     device: str = "cpu"  # cpu 或 cuda
     top_n: int = 5
-    score_threshold: float = 0.5
+    score_threshold: float = 0.0 #只做排序不过滤
     use_fp16: bool = False
     max_length: int = 512
 
@@ -85,10 +84,11 @@ class RAGAnythingConfig:
         "table": 1.2,
         "formula": 1.0,
         "text": 1.0
-    })  # 格式：{"image": 1.5, "table": 1.2, "formula": 1.0, "text": 1.0}
+    })
+    
+    # 其他配置
     backend: Optional[str] = None
-    lang: Optional[str] = None
-    # 字体配置（用于文本转PDF时的中文字体）
+    lang: str = "ch"  # ch/en
     chinese_font_path: Optional[str] = None  # 如果为None，将自动检测Windows系统字体
 
 @dataclass
@@ -115,7 +115,7 @@ class SystemConfig:
 
     # 存储配置
     working_dir: str = "./rag_storage"
-    image_storage: str = "./static/images"
+    image_storage: str = "./static/images" # 废弃
 
     log_dir: Path = Path("./logs")
 
@@ -208,7 +208,11 @@ class SystemConfig:
         config = cls()
 
         # 1. 从config.json读取
-        config_file = Path("./config.json")
+        # 使用 __file__ 获取绝对路径，确保无论从哪里运行都能找到 config.json
+        current_file = Path(__file__).resolve()
+        project_root = current_file.parent.parent
+        config_file = project_root / "config.json"
+
         if config_file.exists():
             try:
                 with open(config_file, 'r', encoding='utf-8') as f:
@@ -221,41 +225,36 @@ class SystemConfig:
                         elif key == 'rerank':
                             # 处理 rerank 配置
                             config.rerank = cls._load_rerank_config(value)
-                        # if hasattr(config, key) and key != 'provider_configs':
-                        #     setattr(config, key, value)
                         elif key == 'provider_configs':
                             # 更新提供商配置
                             config.provider_configs.update(value)
                         elif key == 'rag_anything':
                             config.rag_anything = cls._load_rag_anything_config(value)
                         elif hasattr(config, key):
+                            # 直接设置基础配置字段
                             setattr(config, key, value)
-                    # 更新提供商配置
-                    # if 'provider_configs' in file_config:
-                    #     config.provider_configs.update(file_config['provider_configs'])
-                    print(f"读取配置文件完毕")
+                        else:
+                            # 调试：记录未识别的配置项
+                            logger.info(f"警告: 未识别的配置项 {key} (跳过)")
+                    logger.info(f"读取配置文件完毕")
             except Exception as e:
-                print(f"读取配置文件失败: {e}")
+                logger.error(f"读取配置文件失败: {e}")
         # 2. 环境变量覆盖
         config._load_from_env()
 
         # 3. 根据provider应用默认配置
-        if config.provider in config.provider_configs:
+        if config.provider and config.provider in config.provider_configs:
             provider_config = config.provider_configs[config.provider]
             for key, value in provider_config.items():
-                if not getattr(config, key, None) or getattr(config, key) == getattr(cls(), key):
+                current_value = getattr(config, key, None)
+                default_value = getattr(cls(), key, None)
+                # 如果当前值为空或等于默认值，则应用provider配置
+                if not current_value or current_value == default_value:
                     setattr(config, key, value)
-        
-        # 4. 确保 rag_anything 配置已加载（如果 config.json 中没有，使用默认值）
-        if not hasattr(config, 'rag_anything') or config.rag_anything is None:
-            config.rag_anything = RAGAnythingConfig()
-        
-        # 5. 自动检测中文字体（如果未配置）
-        if config.rag_anything.chinese_font_path is None:
-            detected_font = cls._detect_chinese_font()
-            if detected_font:
-                config.rag_anything.chinese_font_path = detected_font
-                logger.info(f"自动检测到中文字体: {detected_font}")
+                else:
+                    logger.info(f"保留已有配置: {key} = {current_value} (provider默认值: {value})")
+        elif config.provider:
+            logger.warning(f"警告: provider '{config.provider}' 不在 provider_configs 中")
 
         return config
 
@@ -314,18 +313,8 @@ class SystemConfig:
             if hasattr(rag_config, key):
                 setattr(rag_config, key, value)
             else:
-                print(f"未知的 rag_anything 配置项: {key}")
-                # logger.warning(f"未知的 rag_anything 配置项: {key}")
+                logger.warning(f"未知的 rag_anything 配置项: {key}")
 
-        # 自动检测中文字体（如果未配置）
-        if rag_config.chinese_font_path is None:
-            detected_font = SystemConfig._detect_chinese_font()
-            if detected_font:
-                rag_config.chinese_font_path = detected_font
-                logger.info(f"[_load_rag_anything_config] 自动检测到中文字体: {detected_font}")
-            else:
-                logger.warning("[_load_rag_anything_config] 未检测到中文字体，TXT文件中的中文可能显示为黑框")
-        
         return rag_config
 
     def _load_from_env(self):
@@ -498,3 +487,13 @@ class SystemConfig:
 
 # 全局配置实例
 settings = SystemConfig.load_config()
+
+# print("\n=== 配置加载结果 ===")
+# print(f"provider: {settings.provider}")
+# print(f"base_url: {settings.base_url}")
+# print(f"api_key: {settings.api_key[:10] + '...' if settings.api_key else 'None'}")
+# print(f"llm_model: {settings.llm_model}")
+# print(f"vision_model: {settings.vision_model}")
+# print(f"embedding_model: {settings.embedding_model}")
+# print(f"static_base_url: {settings.static_base_url}")
+# print("==================\n")

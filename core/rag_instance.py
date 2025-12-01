@@ -42,7 +42,7 @@ class ProductionRAGInstance:
 
     def __init__(self, business_id: str):
         self.business_id = business_id
-        # ✅ 确保每个业务有独立的存储目录
+        # 确保每个业务有独立的存储目录
         # 格式：./rag_storage_{business_id} 或 rag_storage_{business_id}
         base_dir = settings.working_dir.rstrip('/').rstrip('\\')
         if base_dir.endswith('rag_storage'):
@@ -209,8 +209,7 @@ class ProductionRAGInstance:
                 logger.warning("⚠️ 未检测到中文字体，TXT文件中的中文可能显示为黑框")
         else:
             logger.info(f"✅ 配置的中文字体路径: {settings.rag_anything.chinese_font_path}")
-        
-        # ✅ Monkey patch: 修改RAG-Anything的convert_text_to_pdf方法，使用我们检测到的字体
+
         if settings.rag_anything.chinese_font_path:
             self._patch_rag_anything_font(settings.rag_anything.chinese_font_path)
         
@@ -668,6 +667,12 @@ class ProductionRAGInstance:
                                          image_manager=None):
         """
         处理多模态内容
+
+        Args:
+            modal_content: 多模态内容字典
+            entity_name: 实体名称
+            file_path: 文件路径
+            image_manager: 图片管理器
         """
         await self.ensure_initialized()
 
@@ -728,7 +733,7 @@ class ProductionRAGInstance:
                     result = await self.image_processor.process_multimodal_content(
                         modal_content=single_image_content,
                         content_type="image",
-                        file_path=f"{file_path}_{img_key}",
+                        # file_path=f"{img_key}_{file_path}",
                         entity_name=f"{entity_name} - {img_key}"
                     )
 
@@ -766,46 +771,6 @@ class ProductionRAGInstance:
             self.embedding_cache = dict(items[-500:])
             logger.info("缓存已清理，保留最近500条记录")
 
-    # ==================== 文档数据录入（新增功能） ====================
-
-    async def insert_multimodal_content(
-            self,
-            content_list: list[dict],
-            doc_id: str = None
-    ):
-        """
-        直接插入多模态内容列表（跳过解析）
-
-        适用场景：
-        - 已经解析好的内容
-        - 来自外部源的数据
-        - 需要自定义处理的数据
-
-        Args:
-            content_list: 内容列表，格式如下：
-                [
-                    {
-                        "type": "text",
-                        "content": "文本内容"
-                    },
-                    {
-                        "type": "image",
-                        "content": "图片路径或描述",
-                        "metadata": {...}
-                    },
-                    ...
-                ]
-        """
-        # 使用lightrag_instance的insert_content_direct方法
-        if hasattr(self.lightrag_instance, 'insert_content_direct'):
-            await self.lightrag_instance.insert_content_direct(
-                content_list=content_list,
-                doc_id=doc_id or f"{self.business_id}_custom"
-            )
-        else:
-            # 如果没有insert_content_direct，使用RAG-Anything处理
-            logger.warning("LightRAG没有insert_content_direct方法，使用RAG-Anything处理")
-            raise NotImplementedError("LightRAG不支持直接插入内容，请使用RAG-Anything处理文档")
     # ==================== 查询====================
 
     async def aquery_with_history(
@@ -818,14 +783,11 @@ class ProductionRAGInstance:
         if history is None:
             history = field(default_factory=list)
         await self.ensure_initialized()
-        
-        # ✅ 关键：确认使用的working_dir
+
         logger.info(f"[{self.business_id}] 执行查询，working_dir: {Path(self.working_dir).absolute()}, mode: {mode}, 历史记录数: {len(history) if history else 0}")
         
         # prompt = config.runtime_prompt_patch.rag_response
-        
-        # ✅ 关键：在user_prompt中包含business_id，确保缓存键包含业务信息
-        # 这样不同业务的相似查询不会互相干扰
+
         user_prompt_with_business = f"请基于{self.business_id}业务的知识库回答问题。请用简洁自然的方式回答问题。"
         
         result = await self.lightrag_instance.aquery(query=query,
@@ -834,7 +796,10 @@ class ProductionRAGInstance:
                                                                     # only_need_context=True, # 检索的内容
                                                                     # only_need_prompt=True, # 输入LLM的提示词
                                                                     user_prompt=user_prompt_with_business,
-                                                                    top_k=5),
+                                                                    top_k=10,  # 增加实体/关系检索数量
+                                                                    chunk_top_k=10,  # 显式设置chunk检索数量
+                                                                    include_references=False, # 引用
+                                                                    enable_rerank=settings.rerank.enabled),
                                                    system_prompt=config.runtime_prompt_patch.system_prompt,
                                                    )
         return post_process_response_urls(result)
@@ -909,7 +874,10 @@ class ProductionRAGInstance:
                                                              param=QueryParam(conversation_history=history,
                                                                               mode=mode,
                                                                               user_prompt="请用简洁自然的方式回答问题",
-                                                                              top_k=5),
+                                                                              top_k=10,  # 增加检索数量
+                                                                              chunk_top_k=10,  # 显式设置chunk检索数量
+                                                                              include_references=False,  # 引用
+                                                                              enable_rerank=settings.rerank.enabled),
                                                              )
 
             # 步骤6: 后处理URL
@@ -1124,7 +1092,7 @@ class ProductionRAGInstance:
 
         try:
             # 1. 获取检索prompt
-            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,response_type="Single Paragraph")  # 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'
+            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,response_type="Multiple Paragraphs",include_references=False, enable_rerank=settings.rerank.enabled)  # 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'
             raw_prompt = await self.lightrag_instance.aquery(query, param=query_param,system_prompt=config.runtime_prompt_patch.system_prompt)
 
             # 无图片，直接调用LLM
@@ -1170,7 +1138,7 @@ class ProductionRAGInstance:
                 **要求**: 优先推荐与参考图风格、材质、设计相似的产品。"""
 
             # 3. 获取检索prompt
-            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history)
+            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,response_type="Multiple Paragraphs",include_references=False, enable_rerank=settings.rerank.enabled)
             raw_prompt = await self.lightrag_instance.aquery(enhanced_query, param=query_param)
 
             # 4. 提取库中图片
@@ -1364,7 +1332,7 @@ class ProductionRAGInstance:
             end_page: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        ✅ 文档录入（使用 RAGAnything 的完整流程）
+        文档录入（使用 RAGAnything 的完整流程）
 
         调用链：
         process_document_complete → 解析 → 多模态处理 → 存储到 LightRAG
@@ -1399,7 +1367,7 @@ class ProductionRAGInstance:
                 configured_method=settings.rag_anything.parse_method
             )
 
-            # ✅ 统一使用RAG-Anything处理所有文档（包括TXT/MD）
+            # 统一使用RAG-Anything处理所有文档（包括TXT/MD）
             # RAG-Anything会根据parse_method自动选择处理方式：
             # - parse_method="txt" → 直接读取文本，不转PDF
             # - parse_method="auto"/"mineru" → 使用MinerU完整解析
@@ -1417,24 +1385,23 @@ class ProductionRAGInstance:
                 end_page=end_page
             )
 
-            # ✅ 生成唯一的文档ID（添加时间戳避免重复）
-            # 格式：{business_id}:{filename}_{timestamp}
-            # 这样可以支持同名文件多次上传
-            file_stem = Path(file_path).stem
-            timestamp = int(time.time() * 1000)  # 毫秒时间戳
-            doc_id = f"{self.business_id}:{file_stem}_{timestamp}"
-
             result = await self.rag_anything.process_document_complete(
                 file_path=file_path,
                 output_dir=str(output_dir),
                 parse_method=selected_parse_method,
-                doc_id=doc_id,
                 **parser_kwargs,
             )
 
-            # ✅ 关键优化：注册文档解析产生的图片路径映射
+            # 注册文档解析产生的图片路径映射
             # 图片保持在parsed目录下，只注册URL映射，不迁移文件
-            await self._register_parsed_images(output_dir, doc_id)
+            # 从 result 中获取 doc_id，如果没有则使用文件名作为 fallback
+            result_doc_id = None
+            if isinstance(result, dict):
+                result_doc_id = result.get("doc_id")
+            
+            # 如果没有 doc_id，使用文件名作为 fallback（仅用于图片路径注册）
+            doc_id_for_images = result_doc_id or Path(file_path).stem
+            await self._register_parsed_images(output_dir, doc_id_for_images)
 
             total_time = time.perf_counter() - total_start
 
@@ -1483,7 +1450,7 @@ class ProductionRAGInstance:
                 "error": str(e)
             }
 
-    # ✅ 批量处理也很简单
+    # 批量处理
     async def insert_document_batch(
             self,
             file_paths: List[str],
@@ -1759,7 +1726,7 @@ class ProductionRAGInstance:
                     if img_file.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
                         continue
                     
-                    # ✅ 关键：构建相对于working_dir的路径
+                    # 构建相对于working_dir的路径
                     # 例如：rag_storage_ARglasses/parsed/M400-AR智能眼镜/M400-AR智能眼镜/auto/images/xxx.jpg
                     try:
                         # 获取相对于working_dir的路径
@@ -1767,7 +1734,7 @@ class ProductionRAGInstance:
                         # 转换为URL路径格式（使用正斜杠）
                         url_path = str(rel_path).replace('\\', '/')
                         
-                        # ✅ 关键：确保路径包含rag_storage_{business_id}前缀
+                        # 确保路径包含rag_storage_{business_id}前缀
                         # working_dir格式：./rag_storage_{business_id} 或 rag_storage_{business_id}
                         working_dir_name = Path(self.working_dir).name
                         if not working_dir_name.startswith('rag_storage_'):
