@@ -1540,7 +1540,7 @@ class ProductionRAGInstance:
                         # 构建图片内容
                         img_name = img_file.stem
                         modal_content = {
-                            "img_path": {img_name: str(img_file)},
+                            "img_path": str(img_file),
                             "img_caption": [],
                             "img_footnote": []
                         }

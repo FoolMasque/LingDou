@@ -215,6 +215,7 @@ def post_process_response_urls(response_text: str) -> str:
               images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4}             |
               /[^\s)\]]*static/images/[^\s)\]]+/[^\s)\]]+\.[a-zA-Z]{3,4} |
               [A-Za-z]:[^\s)\]]*rag_storage_[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp) |
+              /[^\s)\]]*rag_storage_[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp) |
               rag_storage_[^\s)\]]+\.(?:jpg|jpeg|png|gif|bmp|webp)
            )(?!://)(?!http://)(?!https://)''',
         re.IGNORECASE | re.VERBOSE
@@ -222,41 +223,58 @@ def post_process_response_urls(response_text: str) -> str:
 
     def replace_local_path(m):
         local_path = m.group(1)
-        
-        # ✅ 关键：如果路径已经是完整URL，直接返回，避免重复转换
+
+        # ✅ 如果路径已经是完整URL，直接返回，避免重复转换
         if local_path.startswith(('http://', 'https://')):
             logger.debug(f"路径已经是URL，跳过转换: {local_path[:80]}...")
             return local_path
-        
+
         # ✅ 额外检查：如果匹配的路径前面有占位符标记，说明它在被保护的URL中，应该跳过
         start_pos = m.start()
         if start_pos > 0:
-            # 检查前面是否有占位符（说明这是被保护的URL的一部分）
             prefix = protected_text[max(0, start_pos - 30):start_pos]
             if '__PROTECTED_URL_' in prefix:
                 logger.debug(f"路径在被保护的URL中，跳过: {local_path[:80]}...")
                 return local_path
 
         # 标准化路径（处理绝对路径和相对路径）
-        # 如果是绝对路径（如 D:/path/to/rag_storage_...），需要提取rag_storage_后面的部分
         normalized_path = local_path.replace('\\', '/')
-        
-        # 构造候选键（避免重复加前缀）
-        candidates = [local_path, normalized_path]
-        
-        # 如果路径包含rag_storage_，尝试提取相对路径部分
+
+        # ✅ 统一处理：如果路径包含 rag_storage_，提取相对部分
+        rel_path_from_rag_storage = None
         if 'rag_storage_' in normalized_path:
             idx = normalized_path.find('rag_storage_')
             if idx >= 0:
-                rel_path = normalized_path[idx:]
-                candidates.append(rel_path)
-                # 也尝试去掉开头的 ./ 或 ../
-                if rel_path.startswith('./'):
-                    candidates.append(rel_path[2:])
-                elif rel_path.startswith('../'):
-                    candidates.append(rel_path[3:])
-        
-        norm = normalized_path.lstrip('./')  # 去掉开头的 ./（不去 ../，让它保持一个候选）
+                rel_path_from_rag_storage = normalized_path[idx:]
+                # 去掉开头的 ./ 或 ../
+                if rel_path_from_rag_storage.startswith('./'):
+                    rel_path_from_rag_storage = rel_path_from_rag_storage[2:]
+                elif rel_path_from_rag_storage.startswith('../'):
+                    rel_path_from_rag_storage = rel_path_from_rag_storage[3:]
+
+        # 构造候选键（按优先级排序）
+        candidates = []
+
+        # 优先级1：原始路径
+        candidates.append(local_path)
+        candidates.append(normalized_path)
+
+        # 优先级2：如果提取到了 rag_storage_ 相对路径，优先尝试
+        if rel_path_from_rag_storage:
+            candidates.append(rel_path_from_rag_storage)
+            # 尝试映射或构建URL（早期返回优化）
+            remote_url = path_manager.get_remote_url(rel_path_from_rag_storage)
+            if remote_url and remote_url.startswith(('http://', 'https://')):
+                logger.debug(f"URL转换成功（rag_storage相对路径）: {local_path} -> {remote_url}")
+                return remote_url
+            # 如果映射表中没有，使用 _build_url_from_path
+            remote_url = path_manager._build_url_from_path(rel_path_from_rag_storage)
+            if remote_url and remote_url.startswith(('http://', 'https://')):
+                logger.debug(f"URL构建成功（rag_storage相对路径）: {local_path} -> {remote_url}")
+                return remote_url
+
+        # 优先级3：其他候选键
+        norm = normalized_path.lstrip('./')
         if normalized_path != norm:
             candidates.append(norm)
 
@@ -265,7 +283,7 @@ def post_process_response_urls(response_text: str) -> str:
         if not norm.startswith('static/'):
             candidates.append(f"static/{norm}")
 
-        # 尝试映射表
+        # 尝试映射表（遍历所有候选键）
         for key in candidates:
             remote_url = path_manager.get_remote_url(key)
             if remote_url and remote_url.startswith(('http://', 'https://')):
@@ -274,8 +292,14 @@ def post_process_response_urls(response_text: str) -> str:
 
         # 兜底构建
         remote_url = path_manager._build_url_from_path(local_path)
-        logger.info(f"URL兜底构建: {local_path[:100]}... -> {remote_url[:100]}...")
-        return remote_url
+        # ✅ 确保返回的是完整URL，不是路径
+        if remote_url and remote_url.startswith(('http://', 'https://')):
+            logger.info(f"URL兜底构建: {local_path[:100]}... -> {remote_url[:100]}...")
+            return remote_url
+        else:
+            # 如果构建失败，返回原路径（避免破坏文本）
+            logger.warning(f"URL构建失败，返回原路径: {local_path[:100]}...")
+            return local_path
 
     # 在保护后的文本上进行替换
     processed_text = pattern.sub(replace_local_path, protected_text)
