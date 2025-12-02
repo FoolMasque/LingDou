@@ -1403,6 +1403,10 @@ class ProductionRAGInstance:
             doc_id_for_images = result_doc_id or Path(file_path).stem
             await self._register_parsed_images(output_dir, doc_id_for_images)
 
+            # 图像处理
+            if settings.rag_anything.enable_image_processing:
+                await self._process_document_images(output_dir, doc_id_for_images)
+
             total_time = time.perf_counter() - total_start
 
             chunks_inserted = 0
@@ -1498,6 +1502,71 @@ class ProductionRAGInstance:
                 "status": "error",
                 "error": str(e)
             }
+
+    async def _process_document_images(self, parsed_output_dir: Path, doc_id: str):
+        """
+        处理文档解析出的图片，生成描述并插入到 LightRAG
+
+        Args:
+            parsed_output_dir: 解析输出目录
+            doc_id: 文档ID
+        """
+        try:
+            # 查找所有图片文件
+            images_dirs = []
+            for root, dirs, files in os.walk(parsed_output_dir):
+                if 'images' in dirs:
+                    images_dirs.append(Path(root) / 'images')
+
+            if not images_dirs:
+                logger.debug(f"未找到图片目录: {parsed_output_dir}")
+                return
+
+            processed_count = 0
+
+            for images_dir in images_dirs:
+                if not images_dir.exists():
+                    continue
+
+                # 遍历所有图片文件
+                for img_file in images_dir.glob("*"):
+                    if not img_file.is_file():
+                        continue
+
+                    if img_file.suffix.lower() not in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']:
+                        continue
+
+                    try:
+                        # 构建图片内容
+                        img_name = img_file.stem
+                        modal_content = {
+                            "img_path": {img_name: str(img_file)},
+                            "img_caption": [],
+                            "img_footnote": []
+                        }
+
+                        # 使用 ImageModalProcessor 处理图片
+                        # 这会生成描述并插入到 LightRAG
+                        logger.info(f"ℹ️ℹ️ℹ️ℹ️ℹ️准备开始处理文档图片录入:图片名称|{img_name}")
+                        result = await self.image_processor.process_multimodal_content(
+                            modal_content=modal_content,
+                            content_type="image",
+                            entity_name=f"{doc_id} - {img_name}" # 先这样把
+                        )
+
+                        if result:
+                            processed_count += 1
+                            logger.info(f"图片处理成功: {img_file.name}")
+
+                    except Exception as e:
+                        logger.error(f"处理图片失败 {img_file.name}: {e}")
+                        continue
+
+            if processed_count > 0:
+                logger.info(f"✅ 已处理 {processed_count} 张图片并插入到 LightRAG")
+
+        except Exception as e:
+            logger.error(f"处理文档图片失败: {e}", exc_info=True)
 
     async def _resolve_parse_method(
             self,
