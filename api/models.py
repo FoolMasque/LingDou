@@ -59,3 +59,12 @@ class ConversationListRequest(BaseModel):
 class ConversationExportRequest(BaseModel):
     """导出会话请求"""
     format: str = Field("json", description="导出格式: json/text")
+
+class BusinessConfigUpdate(BaseModel):
+    """更新业务配置请求"""
+    response_instruction: Optional[str] = None
+    field_mapping: Optional[Dict[str, str]] = None
+    caption_template: Optional[str] = None
+    caption_instructions: Optional[List[str]] = None
+    vision_prompt_template: Optional[str] = None
+    system_prompt_template: Optional[str] = None

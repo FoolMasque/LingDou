@@ -386,3 +386,42 @@ POST /api/conversations/new?business_id=toilet&user_id=lyq HTTP/1.1
 Host: 47.100.14.93:8008
 
 
+### 业务管理接口
+
+#### 1. 删除业务
+```bash
+DELETE /api/businesses/{business_id}
+```
+
+**特性**：
+- ✅ 彻底删除：移除业务配置、RAG实例及相关数据目录
+- ⚠️ 危险操作：数据不可恢复，请谨慎使用
+
+**示例**：
+```bash
+curl -X DELETE "http://localhost:8008/api/businesses/paper"
+```
+
+#### 2. 更新业务配置
+```bash
+PUT /api/businesses/{business_id}/config
+Content-Type: application/json
+```
+
+**参数**:
+- `response_instruction`: (str) 自定义回复指导，例如"请用海盗语气回答"
+- `field_mapping`: (dict) 字段映射，例如 `{"product_name": "item_name"}`
+- `vision_prompt_template`: (str) 自定义视觉分析提示词
+
+**示例**：
+```bash
+curl -X PUT "http://localhost:8008/api/businesses/furniture/config" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "response_instruction": "请用简短的列表形式回答",
+    "field_mapping": {
+        "product_name": "item_title",
+        "product_image": "main_pic"
+    }
+  }'
+```

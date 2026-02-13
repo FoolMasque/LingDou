@@ -20,7 +20,7 @@ from config.settings import settings
 from api.models import ProcessRequest, QueryRequest, QueryResponse
 from core.image_processor import ImageProcessor  # 抽取图片处理逻辑
 from core.conversation_manager import ConversationManager, StorageBackend
-from api.models import ChatMessage, ConversationCreate, ConversationListRequest
+from api.models import ChatMessage, ConversationCreate, ConversationListRequest, BusinessConfigUpdate
 from core.components import BusinessConfig
 from utils.logger import setup_logger
 
@@ -498,6 +498,90 @@ async def business_health_check(business_id: str):
 
     return health_info
 
+
+@router.delete("/businesses/{business_id}")
+async def delete_business(business_id: str):
+    """删除业务"""
+    core_system = Dependencies.get_core_system()
+    if not core_system:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+
+    try:
+        core_system.delete_business(business_id)
+        return {"success": True, "message": f"业务 {business_id} 已删除"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"删除业务失败: {e}")
+        raise HTTPException(status_code=500, detail=f"删除业务失败: {str(e)}")
+
+
+@router.get("/businesses/{business_id}/config")
+async def get_business_config(business_id: str):
+    """获取业务配置"""
+    core_system = Dependencies.get_core_system()
+    if not core_system:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+
+    if business_id not in core_system.businesses:
+        raise HTTPException(status_code=404, detail="业务不存在")
+
+    config = core_system.businesses[business_id]
+    
+    # 避免变量名冲突，这里显式导入
+    import config.runtime_prompt_patch as runtime_patch
+
+    # 返回配置详情
+    return {
+        "business_id": config.business_id,
+        "name": config.name,
+        "image_fields": config.image_fields,
+        "text_fields": config.text_fields,
+        "response_instruction": getattr(config, "response_instruction", None),
+        "default_response_instruction": "请用简洁自然的方式回答问题",
+        "field_mapping": getattr(config, "field_mapping", None),
+        "caption_template": config.caption_template,
+        "caption_instructions": config.caption_instructions,
+        "vision_prompt_template": config.vision_prompt_template,
+        "system_prompt_template": getattr(config, "system_prompt_template", None),
+        "default_system_prompt_template": runtime_patch.system_prompt
+    }
+
+
+@router.put("/businesses/{business_id}/config")
+async def update_business_config(business_id: str, config_update: BusinessConfigUpdate):
+    """更新业务配置"""
+    core_system = Dependencies.get_core_system()
+    if not core_system:
+        raise HTTPException(status_code=500, detail="系统未初始化")
+
+    try:
+        # 过滤None值
+        updates = {k: v for k, v in config_update.dict().items() if v is not None}
+        
+        if not updates:
+            return {"success": True, "message": "无配置更新"}
+
+        updated_config = core_system.update_business_config(business_id, updates)
+        
+        return {
+            "success": True, 
+            "message": "配置已更新",
+            "config": {
+                "response_instruction": updated_config.response_instruction,
+                "field_mapping": updated_config.field_mapping,
+                "caption_template": updated_config.caption_template,
+                "vision_prompt_template": updated_config.vision_prompt_template,
+                "system_prompt_template": updated_config.system_prompt_template
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"更新配置失败: {e}")
+        raise HTTPException(status_code=500, detail=f"更新配置失败: {str(e)}")
+
+
 @router.post("/conversations/new")
 async def create_new_conversation(
         business_id: str,
@@ -662,7 +746,7 @@ async def generate_stream_response(
     yield f"data: {json.dumps({'finished': True})}\n\n"
 
 
-from fastapi import UploadFile, File, Form, BackgroundTasks
+from fastapi import UploadFile, File, Form
 from pathlib import Path
 import shutil
 
@@ -770,7 +854,7 @@ async def upload_document(
         business_id: str = Form(...),
         doc_type: str = Form("manual"),
         use_gpu: bool = Form(False),
-        background_tasks: BackgroundTasks = None,
+        background_tasks: BackgroundTasks = BackgroundTasks(),
         core_system=Depends(Dependencies.get_core_system)
 ):
     """
@@ -811,6 +895,7 @@ async def upload_document(
             raise HTTPException(400, "RAGAnything 未启用，请检查配置")
 
         # 5. 处理文档
+        # TODO: 异步处理
         result = await rag_instance.insert_document(
             file_path=str(temp_file),
             doc_type=doc_type,

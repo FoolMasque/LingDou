@@ -786,10 +786,24 @@ class ProductionRAGInstance:
 
         logger.info(f"[{self.business_id}] 执行查询，working_dir: {Path(self.working_dir).absolute()}, mode: {mode}, 历史记录数: {len(history) if history else 0}")
         
-        # prompt = config.runtime_prompt_patch.rag_response
-
-        user_prompt_with_business = f"请基于{self.business_id}业务的知识库回答问题。请用简洁自然的方式回答问题。"
+        # 获取业务配置
+        from api.routes import Dependencies
+        core_system = Dependencies.get_core_system()
+        business_config = core_system.businesses.get(self.business_id)
         
+        # 构建用户提示词
+        base_instruction = f"请基于{self.business_id}业务的知识库回答问题。"
+        custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
+        
+        if custom_instruction:
+             user_prompt_with_business = f"{base_instruction}\n\n回答要求：{custom_instruction}"
+        else:
+             user_prompt_with_business = f"{base_instruction} 请用简洁自然的方式回答问题。"
+
+        final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
+        logger.info(f"\n[Prompt Debug] System Prompt:\n{final_system_prompt[:200]}...")
+        logger.info(f"\n[Prompt Debug] User Prompt:\n{user_prompt_with_business}")
+
         result = await self.lightrag_instance.aquery(query=query,
                                                    param=QueryParam(conversation_history=history,
                                                                     mode=mode,
@@ -800,7 +814,7 @@ class ProductionRAGInstance:
                                                                     chunk_top_k=10,  # 显式设置chunk检索数量
                                                                     include_references=False, # 引用
                                                                     enable_rerank=settings.rerank.enabled),
-                                                   system_prompt=config.runtime_prompt_patch.system_prompt,
+                                                   system_prompt=final_system_prompt,
                                                    )
         return post_process_response_urls(result)
 
@@ -870,14 +884,30 @@ class ProductionRAGInstance:
                 )
             else:
                 # 纯文本查询
+                # 获取业务配置用于提示词定制
+                from api.routes import Dependencies
+                core_system = Dependencies.get_core_system()
+                business_config = core_system.businesses.get(self.business_id)
+                custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
+                
+                user_prompt_text = "请用简洁自然的方式回答问题"
+                if custom_instruction:
+                    user_prompt_text = f"回答要求：{custom_instruction}"
+
+                final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
+                
+                print(f"\n{'='*20} [Multimodal Prompt Debug] {'='*20}\n[System Prompt]:\n{final_system_prompt[:500]}...", flush=True)
+                print(f"\n[User Prompt]:\n{user_prompt_text}\n{'='*60}\n", flush=True)
+
                 result = await self.lightrag_instance.aquery(query=enhanced_query,
                                                              param=QueryParam(conversation_history=history,
                                                                               mode=mode,
-                                                                              user_prompt="请用简洁自然的方式回答问题",
+                                                                              user_prompt=user_prompt_text,
                                                                               top_k=10,  # 增加检索数量
                                                                               chunk_top_k=10,  # 显式设置chunk检索数量
                                                                               include_references=False,  # 引用
                                                                               enable_rerank=settings.rerank.enabled),
+                                                             system_prompt=final_system_prompt,
                                                              )
 
             # 步骤6: 后处理URL
@@ -914,6 +944,22 @@ class ProductionRAGInstance:
 
     async def _call_vlm_with_images(self, prompt: str, query: str, images: List[str]) -> str:
         """VLM看库中图片（纯文本查询时用）"""
+        
+         # 获取业务配置用于提示词定制
+        from api.routes import Dependencies
+        core_system = Dependencies.get_core_system()
+        business_config = core_system.businesses.get(self.business_id)
+        custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
+                
+        req_text = """请基于检索到的产品图片和上下文信息，为用户提供详细的产品推荐：
+            1. 推荐最匹配的产品（名称、特点）
+            2. 每个推荐产品都要用Markdown格式显示图片：`![产品名](图片URL)`
+            3. 说明推荐理由
+            4. 提供选购建议
+            5. 如果用户问的是某个具体产品，只关注该产品"""
+        if custom_instruction:
+            req_text = f"请基于检索到的产品图片和上下文信息回答，并严格遵守以下要求：\n{custom_instruction}"
+
         content_parts = []
 
         # 添加检索文本
@@ -936,14 +982,9 @@ class ProductionRAGInstance:
             {query}
 
             === 回答要求 ===
-            请基于检索到的产品图片和上下文信息，为用户提供详细的产品推荐：
-            1. 推荐最匹配的产品（名称、特点）
-            2. 每个推荐产品都要用Markdown格式显示图片：`![产品名](图片URL)`
-            3. 说明推荐理由
-            4. 提供选购建议
-
-            请用Markdown格式回答。
+            {req_text}
             """})
+
 
         vision_func = self._get_vision_func()
 
@@ -962,19 +1003,27 @@ class ProductionRAGInstance:
         try:
             vision_func = self._get_vision_func()
 
-            prompt = """分析这张产品图片，提取关键特征：
-                    1. 产品类型
-                    2. 风格
-                    3. 材质特征
-                    4. 颜色和造型
-                    5. 适用场景
-                    6. 产品主体细节
+            # 获取业务配置
+            from api.routes import Dependencies
+            core_system = Dependencies.get_core_system()
+            business_config = core_system.businesses.get(self.business_id)
+            
+            # 使用自定义 vision_prompt_template 或默认值
+            default_prompt = """分析这张产品图片，提取关键特征：
+                1. 产品类型
+                2. 风格
+                3. 材质特征
+                4. 颜色和造型
+                5. 适用场景
+                6. 产品主体细节
 
-                    用简洁中文描述，便于匹配相似产品。"""
+                用简洁中文描述，便于匹配相似产品。"""
+            
+            prompt = getattr(business_config, 'vision_prompt_template', None) or default_prompt
 
             result = await vision_func(
                 prompt=prompt,
-                system_prompt="你是产品分析专家",
+                system_prompt="你是产品分析专家", # 这个system_prompt相对通用，可以暂时保留，或者也配置化
                 image_data=image_base64
             )
 
@@ -1091,12 +1140,40 @@ class ProductionRAGInstance:
         logger.info(f"流式文本查询: {query[:50]}...")
 
         try:
-            # 1. 获取检索prompt
-            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,response_type="Multiple Paragraphs",include_references=False, enable_rerank=settings.rerank.enabled)  # 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'
-            raw_prompt = await self.lightrag_instance.aquery(query, param=query_param,system_prompt=config.runtime_prompt_patch.system_prompt)
+            # 获取业务配置
+            from api.routes import Dependencies
+            core_system = Dependencies.get_core_system()
+            business_config = core_system.businesses.get(self.business_id)
+            
+            # 1. 准备 prompts
+            custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
+            user_prompt_text = f"回答要求：{custom_instruction}" if custom_instruction else "请用简洁自然的方式回答问题"
+            
+            final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
+            
+            print(f"\n{'='*20} [Stream Prompt Debug] {'='*20}\n[System Prompt]:\n{final_system_prompt[:500]}...", flush=True)
+
+            # 2. 获取检索prompt
+            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,
+                                     response_type="Multiple Paragraphs", include_references=False, 
+                                     enable_rerank=settings.rerank.enabled,
+                                     user_prompt=user_prompt_text)
+            
+            raw_prompt = await self.lightrag_instance.aquery(query, param=query_param, system_prompt=final_system_prompt)
 
             # 无图片，直接调用LLM
-            async for chunk in self._call_llm_stream(raw_prompt, business_id):
+            # 注意：raw_prompt 已经是完整的 Prompt (包含 System + Context + User Query)
+            # 但 _call_llm_stream 会再次包装。
+            # 如果 raw_prompt 是完整的，我们应该把它当做 user message 发给 LLM，
+            # 而 system message 就用我们要的 final_system_prompt (或者简化版，因为 raw_prompt 里可能已经有了)
+            
+             # LightRAG 的 only_need_prompt=True 返回的是包含了 System Prompt 的完整字符串
+            # 所以调用 _call_llm_stream 时，system_role 应该设为简单通用，或者干脆为空？
+            # 不，_call_llm_stream 目前是： system= "你是...智能助手", user=raw_prompt
+            # 既然 raw_prompt 里已经有了 "You are an expert AI...", 那 _call_llm_stream 的 system prompt 可能会造成干扰
+            # 但既然我们不能轻易改 LightRAG 的行为，我们最好是把 _call_llm_stream 的 system prompt 设为我们想要的 custom system prompt
+            
+            async for chunk in self._call_llm_stream(raw_prompt, business_id, system_message=final_system_prompt):
                 yield chunk
 
         except Exception as e:
@@ -1119,6 +1196,11 @@ class ProductionRAGInstance:
         logger.info(f"流式多模态查询: {query[:50]}..., 用户图片={len(user_images) if user_images else 0}张")
 
         try:
+            # 获取业务配置
+            from api.routes import Dependencies
+            core_system = Dependencies.get_core_system()
+            business_config = core_system.businesses.get(self.business_id)
+
             # 1. 分析用户图片
             user_descriptions = []
             if user_images:
@@ -1137,26 +1219,40 @@ class ProductionRAGInstance:
             
                 **要求**: 优先推荐与参考图风格、材质、设计相似的产品。"""
 
-            # 3. 获取检索prompt
-            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,response_type="Multiple Paragraphs",include_references=False, enable_rerank=settings.rerank.enabled)
-            raw_prompt = await self.lightrag_instance.aquery(enhanced_query, param=query_param)
+            # 3. 准备 prompts
+            custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
+            user_prompt_text = f"回答要求：{custom_instruction}" if custom_instruction else "请用简洁自然的方式回答问题"
+            final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
+            
+            print(f"\n{'='*20} [Stream Multimodal Prompt Debug] {'='*20}\n[System Prompt]:\n{final_system_prompt[:500]}...", flush=True)
 
-            # 4. 提取库中图片
+            # 4. 获取检索prompt
+            query_param = QueryParam(mode=mode, only_need_prompt=True, conversation_history=history,
+                                     response_type="Multiple Paragraphs", include_references=False, 
+                                     enable_rerank=settings.rerank.enabled,
+                                     user_prompt=user_prompt_text)
+            
+            # 使用自定义 system_prompt
+            raw_prompt = await self.lightrag_instance.aquery(enhanced_query, param=query_param, system_prompt=final_system_prompt)
+
+            # 5. 提取库中图片
             enhanced_prompt, library_images = await self._extract_images_from_prompt(raw_prompt)
 
             logger.info(f"检索到 {len(library_images)} 张产品图片")
 
-            # 5. 流式VLM分析
+            # 6. 流式VLM分析 / LLM
             if user_images or library_images:
+                # TODO: Check if _vlm_analyze_all_images_stream needs prompt update
                 async for chunk in self._vlm_analyze_all_images_stream(
                         prompt=enhanced_prompt,
                         query=query,
                         user_images=user_images or [],
-                        library_images=library_images
+                        library_images=library_images,
+                        system_prompt=final_system_prompt # pass system prompt
                 ):
                     yield chunk
             else:
-                async for chunk in self._call_llm_stream(enhanced_query,business_id):
+                async for chunk in self._call_llm_stream(enhanced_query, business_id, system_message=final_system_prompt):
                     yield chunk
 
         except Exception as e:
@@ -1164,7 +1260,7 @@ class ProductionRAGInstance:
             yield f"\n\n❌ 错误: {str(e)}"
 
     #  核心流式方法
-    async def _call_llm_stream(self, prompt: str, business_id: str):
+    async def _call_llm_stream(self, prompt: str, business_id: str, system_message: str = None):
         """流式调用LLM"""
         client = openai.AsyncOpenAI(
             api_key=settings.api_key,
@@ -1174,11 +1270,20 @@ class ProductionRAGInstance:
         core_system = Dependencies.get_core_system()
         business_name = core_system.businesses.get(business_id).name or "产品"
 
+        # 如果没有传 system_message，使用默认的
+        if not system_message:
+            system_message = f"你是{business_name}专业的智能助手,输出自然精炼"
+
+        logger.info(f"Stream LLM Call - Prompt Type: {type(prompt)}, System Msg Type: {type(system_message)}")
+        if not isinstance(system_message, str):
+             logger.error(f"SYSTEM MESSAGE IS NOT STRING: {system_message}")
+             system_message = str(system_message) # Force string conversion
+        
         try:
             stream = await client.chat.completions.create(  # type: ignore
                 model=settings.llm_model,
                 messages=[
-                    {"role": "system", "content": f"你是{business_name}专业的智能助手,输出自然精炼"},
+                    {"role": "system", "content": system_message},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.75,
@@ -1248,7 +1353,8 @@ class ProductionRAGInstance:
                                              prompt: str,
                                              query: str,
                                              user_images: List[str],
-                                             library_images: List[str]):
+                                             library_images: List[str],
+                                             system_prompt: str = None):
         """流式VLM分析所有图片"""
         content_parts = []
 
@@ -1288,12 +1394,15 @@ class ProductionRAGInstance:
             base_url=settings.base_url,
             timeout=90.0
         )
+        
+        # 使用自定义 system_prompt 或默认值
+        final_system_prompt = system_prompt or "你是专业的智能产品顾问，请基于提供的图片和信息回答问题。"
 
         try:
             stream = await client.chat.completions.create(  # type: ignore
                 model=settings.vision_model,
                 messages=[
-                    {"role": "system", "content": "你是侘寂家具的专业产品顾问"},
+                    {"role": "system", "content": final_system_prompt},
                     {"role": "user", "content": content_parts}
                 ],
                 temperature=0.1,

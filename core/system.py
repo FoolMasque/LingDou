@@ -54,7 +54,73 @@ class ProductionCoreSystem:
         # 保存业务配置到文件
         self._save_business_configs()
         
+        
         logger.info(f"业务注册成功: {config.name}")
+
+    def delete_business(self, business_id: str):
+        """删除业务"""
+        if business_id not in self.businesses:
+            raise ValueError(f"业务不存在: {business_id}")
+
+        # 1. 移除RAG实例（如果存在）
+        if business_id in self.rag_instances:
+            # TODO: 实现RAG实例的清理逻辑（如果有资源占用）
+            del self.rag_instances[business_id]
+        
+        # 2. 移除处理器
+        if business_id in self.processors:
+            del self.processors[business_id]
+
+        # 3. 移除锁
+        if business_id in self._init_locks:
+            del self._init_locks[business_id]
+
+        # 4. 移除业务配置
+        del self.businesses[business_id]
+
+        # 5. 保存配置
+        self._save_business_configs()
+
+        # 6. 删除数据目录 (rag_storage_{business_id})
+        # 注意：这里我们尝试删除，但如果被占用可能会失败，日志记录即可
+        import shutil
+        try:
+            rag_storage_dir = Path(f"./rag_storage_{business_id}")
+            if rag_storage_dir.exists():
+                shutil.rmtree(rag_storage_dir)
+                logger.info(f"✅ 已删除业务数据目录: {rag_storage_dir}")
+        except Exception as e:
+            logger.error(f"删除业务数据目录失败: {e}")
+
+        logger.info(f"业务已删除: {business_id}")
+        return True
+
+    def update_business_config(self, business_id: str, updates: Dict[str, Any]):
+        """更新业务配置"""
+        if business_id not in self.businesses:
+            raise ValueError(f"业务不存在: {business_id}")
+        
+        config = self.businesses[business_id]
+        
+        # 更新允许的字段
+        allowed_updates = [
+            "response_instruction","default_response_instruction", "field_mapping", "caption_template", 
+            "caption_instructions", "vision_prompt_template", "system_prompt_template"
+        ]
+        
+        updated = False
+        for key, value in updates.items():
+            if key in allowed_updates:
+                setattr(config, key, value)
+                updated = True
+        
+        if updated:
+            self._save_business_configs()
+            # 重新初始化处理器以应用新配置（主要是caption builder）
+            self.processors[business_id] = MultiModalProcessor(business_id, config=config)
+            logger.info(f"业务配置已更新: {business_id}")
+        
+        return config
 
     async def _ensure_rag_initialized(self, business_id: str):
         """
@@ -165,19 +231,25 @@ class ProductionCoreSystem:
             try:
                 # 获取实体名称字段（优先使用配置的字段）
                 business_config = self.businesses.get(business_id)
-                entity_name_field = None
-                if business_config and business_config.entity_name_field:
-                    entity_name_field = business_config.entity_name_field
-                elif business_config and business_config.text_fields:
-                    entity_name_field = business_config.text_fields[0]  # 使用第一个文本字段
-                
-                # 尝试多个可能的字段名
                 entity_name = None
-                if entity_name_field:
-                    entity_name = item.get(entity_name_field)
+
+                # 1. 优先使用 field_mapping 中的 "product_name"
+                if business_config and business_config.field_mapping:
+                    mapping = business_config.field_mapping
+                    if "product_name" in mapping:
+                        source_field = mapping["product_name"]
+                        entity_name = item.get(source_field)
+
+                # 2. 其次使用 entity_name_field
+                if not entity_name and business_config and business_config.entity_name_field:
+                    entity_name = item.get(business_config.entity_name_field)
                 
+                # 3. 再次使用第一个 text_field
+                if not entity_name and business_config and business_config.text_fields:
+                    entity_name = item.get(business_config.text_fields[0])
+                
+                # 4. 降级：尝试常见字段名
                 if not entity_name:
-                    # 降级：尝试常见字段名
                     for field in ["商品名", "produce", "name", "title", "产品名"]:
                         if field in item:
                             entity_name = item[field]
@@ -217,22 +289,34 @@ class ProductionCoreSystem:
         """提取所有图片URL，包括详情图片"""
         all_urls = set()  # 使用set去重
 
+        # 尝试获取当前业务的 mapping，但这里可能不好获取 business_id，
+        # 暂时使用通用逻辑，或者假设调用方会确保 key 的正确性。
+        # 为了更好地支持 field_mapping，我们需要遍历 item 动态获取
+        
         for item in data:
-            # 封面图片
-            if item.get("cover_pic"):
-                all_urls.add(item["cover_pic"])
-
-            # 详情图片 - 确保正确处理
-            detail_images = item.get("detail_images")
-            if detail_images:
-                if isinstance(detail_images, list):
-                    # 是列表，逐一添加
-                    for img_url in detail_images:
-                        if img_url and isinstance(img_url, str):
-                            all_urls.add(img_url)
-                elif isinstance(detail_images, str):
-                    # 是单个字符串，直接添加
-                    all_urls.add(detail_images)
+            # 简单策略：遍历所有看起来像URL的value
+            # 或者复用 _collect_all_images 的逻辑? 
+            # 鉴于 _collect_all_images 比较复杂且依赖 processor，这里先用简单逻辑 + 常见字段
+            
+            potential_image_fields = ["cover_pic", "detail_images", "image", "img", "pic", "photos", "images"]
+            
+            for key, value in item.items():
+                if not value:
+                    continue
+                    
+                is_potential = False
+                if key in potential_image_fields:
+                    is_potential = True
+                elif "pic" in key.lower() or "img" in key.lower() or "image" in key.lower():
+                    is_potential = True
+                
+                if is_potential:
+                    if isinstance(value, str) and (value.startswith("http") or value.startswith("/")):
+                        all_urls.add(value)
+                    elif isinstance(value, list):
+                        for v in value:
+                            if isinstance(v, str) and (v.startswith("http") or v.startswith("/")):
+                                all_urls.add(v)
 
         logger.info(f"从 {len(data)} 条数据中提取到 {len(all_urls)} 个唯一图片URL")
         return list(all_urls)
@@ -429,7 +513,9 @@ class ProductionCoreSystem:
                     "caption_fields": config.caption_fields,
                     "caption_instructions": config.caption_instructions,
                     "entity_name_field": config.entity_name_field,
-                    "vision_prompt_template": config.vision_prompt_template
+                    "vision_prompt_template": config.vision_prompt_template,
+                    "response_instruction": config.response_instruction,
+                    "field_mapping": config.field_mapping
                 }
             
             # 保存到文件
@@ -462,8 +548,11 @@ class ProductionCoreSystem:
                         caption_template=config_data.get("caption_template"),
                         caption_fields=config_data.get("caption_fields"),
                         caption_instructions=config_data.get("caption_instructions"),
+
                         entity_name_field=config_data.get("entity_name_field"),
-                        vision_prompt_template=config_data.get("vision_prompt_template")
+                        vision_prompt_template=config_data.get("vision_prompt_template"),
+                        response_instruction=config_data.get("response_instruction"),
+                        field_mapping=config_data.get("field_mapping")
                     )
                     
                     # 注册业务（但不保存，避免循环）

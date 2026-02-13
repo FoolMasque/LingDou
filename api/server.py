@@ -280,31 +280,31 @@ def main():
         )
 
 
-if __name__ == "__main__":
-    # os.environ['OPENAI_API_KEY'] = "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"
-    main()
+# if __name__ == "__main__":
+#     # os.environ['OPENAI_API_KEY'] = "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"
+#     main()
 
 # DEBUG用
-# import asyncio
-# import uvicorn
-#
-# def debug_main():
-#     config = uvicorn.Config(
-#         app="api.server:app",
-#         host="0.0.0.0",
-#         port=8008,
-#         reload=False,
-#         log_level="info",
-#     )
-#     server = uvicorn.Server(config)
-#
-#     # 手动创建事件循环，避免 PyCharm patch 冲突
-#     loop = asyncio.new_event_loop()
-#     asyncio.set_event_loop(loop)
-#
-#     loop.run_until_complete(server.serve())
-#     loop.close()
-#
-#
-# if __name__ == "__main__":
-#     debug_main()
+import asyncio
+import uvicorn
+
+def debug_main():
+    config = uvicorn.Config(
+        app="api.server:app",
+        host="0.0.0.0",
+        port=8008,
+        reload=False,
+        log_level="info",
+    )
+    server = uvicorn.Server(config)
+
+    # 手动创建事件循环，避免 PyCharm patch 冲突
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    loop.run_until_complete(server.serve())
+    loop.close()
+
+
+if __name__ == "__main__":
+    debug_main()

@@ -294,16 +294,17 @@ Consider the conversation history if provided to maintain conversational flow an
   
 3. Formatting & Language:
   - The response MUST be in the same language as the user query.
-  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
+  - The response should utilize Markdown formatting for enhanced clarity, unless specific formatting instructions are provided in the "Additional Instructions" section.
   - The response should be presented in {response_type}.  
 
 4. Image Presentation:
   - If product-related images are available in the **Context**, include **1–2 representative images per product** in the response output.
-  - **IMPORTANT**: Use the image path from the chunk content (e.g., "ImagePath/图片路径：rag_storage_furniture/images/xxx.jpg"), NOT from file_path or any other metadata fields.
+  - **IMPORTANT**: Use the image path from the chunk content (e.g., "图片路径：rag_storage_furniture/images/xxx.jpg"), NOT from file_path or any other metadata fields.
   - Each image should be shown using Markdown image syntax, for example:  
     `![Product Name](image_url)`
-  - The image_url should be the actual path found in the chunk content, such as "rag_storage_furniture/images/xxx.jpg" or ".\\rag_storage_ARglasses\\parsed\\M400-AR智能眼镜\\M400-AR智能眼镜\\auto\\images\\xx.png".
+  - The image_url should be the actual path found in the chunk content, such as "rag_storage_furniture/images/xxx.jpg" or "/root/workspace/LingDou/rag_storage_ARglasses/parsed/M400-AR智能眼镜/M400-AR智能眼镜/auto/images/c5xx0.jpg".
   - Select images that best represent the product's appearance or key features. Avoid duplicating similar images.
+  - If the search results do not contain images, please do not fabricate non-existent images.
     
 5. Additional Instructions: {user_prompt}
 

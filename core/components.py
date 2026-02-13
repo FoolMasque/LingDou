@@ -42,6 +42,9 @@ class BusinessConfig:
     caption_instructions: Optional[List[str]] = None  # 图片分析指令列表
     entity_name_field: Optional[str] = None  # 实体名称字段（默认使用第一个text_field或"商品名"）
     vision_prompt_template: Optional[str] = None  # 自定义视觉分析提示词模板
+    response_instruction: Optional[str] = None  # 自定义回复指导（例如：简短输出）
+    field_mapping: Optional[Dict[str, str]] = None  # 通用字段映射 {标准字段: JSON字段}
+    system_prompt_template: Optional[str] = None  # 自定义系统Prompt模板（覆盖默认的Role/Instructions）
 
 
 class ImageOptimizer:
