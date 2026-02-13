@@ -15,8 +15,9 @@ except ImportError:
     from wechat_connector import WeChatShopConnector
 
 # Configuration
-CONFIG_FILE = "config.json"
-STATE_FILE = "synced_ids.json"
+file_dir = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(file_dir, "config.json")
+STATE_FILE = os.path.join(file_dir, "synced_ids.json")
 LINGDOU_API_URL = "http://localhost:8008/api/process_data"  # Default local API
 
 class WeChatSyncService:
