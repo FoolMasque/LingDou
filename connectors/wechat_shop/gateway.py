@@ -5,6 +5,7 @@ import logging
 from typing import List, Dict, Tuple, Optional
 import urllib.parse
 import hashlib
+import traceback
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 import httpx
@@ -21,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Load API URL from environment or hardcode defaults
-LINGDOU_API_URL = os.getenv("LINGDOU_API_URL", "http://47.100.14.93:8008/api/query")
+LINGDOU_API_URL = os.getenv("LINGDOU_API_URL", "http://47.100.14.93:8008/api/query") # localhost
 
 # Hardcode or use specific GATEWAY_ prefix to avoid global ENV conflicts
 OPENAI_API_KEY = os.getenv("GATEWAY_OPENAI_API_KEY", "sk-e5bab9b0d89b42759f0832de6c2ece07")  
@@ -82,7 +83,7 @@ async def get_or_create_lingdou_conversation(openid: str) -> str:
     # If not found or expired, create a new one via LingDou API
     async with httpx.AsyncClient() as client:
         try:
-            # We assume LingDou runs on localhost:8008 based on your config
+            # localhost
             create_url = f"http://47.100.14.93:8008/api/conversations/new?business_id=wechat_shop&user_id={openid}"
             resp = await client.post(create_url)
             resp.raise_for_status()
@@ -204,8 +205,8 @@ async def recognize_intent_and_extract(query: str, history_text: str) -> IntentR
 class WeChatWebhookRequest(BaseModel):
     openid: str
     query: str
-    tracking_number: Optional[str] = None
-    com: Optional[str] = "yuantong"  # Carrier code, default to yuantong
+    order_id: Optional[str] = None
+    com: Optional[str] = "yuantong"  # Default carrier fallback
     # In a real environment, you'd have msg_id, event_type, etc.
 
 class GatewayResponse(BaseModel):
@@ -213,7 +214,73 @@ class GatewayResponse(BaseModel):
     intent_detected: str
     images: Optional[List[str]] = []
 
-# --- Logistics API Handlers ---
+# --- WeChat API & Logistics Handlers ---
+
+async def fetch_wechat_order_tracking(order_id: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Fetches WeChat access token and then fetches order details to extract waybill_id and carrier.
+    Returns (waybill_id, delivery_name_or_code)
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            # 1. Get Token
+            token_url = "http://47.100.14.93/backend//lingdou/wx_store/wxad76052896802106/token?secret=1024%40Yinyu"
+            token_resp = await client.get(token_url, timeout=10.0)
+            token_resp.raise_for_status()
+            token_data = token_resp.json()
+            # Depending on actual API structure, usually it's in a 'token' or 'access_token' field
+            # The backend API apparently returns a raw string or a stringified JSON
+            if isinstance(token_data, str):
+                try:
+                    # Try to parse string as JSON just in case
+                    token_json = json.loads(token_data)
+                    access_token = token_json.get("access_token")
+                    if not access_token:
+                        data_val = token_json.get("data")
+                        access_token = data_val.get("access_token") if isinstance(data_val, dict) else (data_val if isinstance(data_val, str) else None)
+                except json.JSONDecodeError:
+                    # If it's not JSON, assume the string itself is the raw token
+                    access_token = token_data.strip()
+            else:
+                access_token = token_data.get("access_token")
+                if not access_token:
+                    data_val = token_data.get("data")
+                    access_token = data_val.get("access_token") if isinstance(data_val, dict) else (data_val if isinstance(data_val, str) else None)
+            
+            if not access_token:
+                logger.error(f"Failed to extract access_token from response: {token_data}")
+                return None, None
+
+            # 2. Get Order Details
+            order_url = f"https://api.weixin.qq.com/channels/ec/order/get?access_token={access_token}"
+            order_payload = {"order_id": order_id}
+            order_resp = await client.post(order_url, json=order_payload, timeout=10.0)
+            order_resp.raise_for_status()
+            order_data = order_resp.json()
+            
+            error_code = order_data.get("errcode", 0)
+            if error_code != 0:
+                logger.error(f"WeChat API returned error {error_code}: {order_data.get('errmsg')}")
+                return None, None
+                
+            order_info = order_data.get("order", {})
+            order_detail = order_info.get("order_detail", {})
+            delivery_info = order_detail.get("delivery_info", {})
+            delivery_product_info = delivery_info.get("delivery_product_info", [])
+            
+            if delivery_product_info and len(delivery_product_info) > 0:
+                first_package = delivery_product_info[0]
+                waybill_id = first_package.get("waybill_id")
+                # Attempt to get delivery name, but fallback to caller's provided com or yuantong
+                delivery_name = first_package.get("delivery_name") or first_package.get("delivery_id")
+                return waybill_id, delivery_name
+            else:
+                logger.info(f"Order {order_id} has no delivery info yet.")
+                return None, None
+                
+        except Exception as e:
+            logger.error(f"Error fetching WeChat order tracking: {e}\n{traceback.format_exc()}")
+            return None, None
 
 async def fetch_logistics_info(tracking_number: str, com: str = "yuantong") -> dict:
     """Fetch real logistics data from kuaidi100 API."""
@@ -310,12 +377,44 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
     if intent_res.intent == "order":
         # 拦截：订单咨询逻辑
         logger.info(f"[{openid}] Routing to ORDER handler.")
-        if request.tracking_number:
-            logger.info(f"[{openid}] Querying logistics for tracking_number: {request.tracking_number} (carrier: {request.com})")
-            logistics_data = await fetch_logistics_info(request.tracking_number, request.com)
-            final_reply = await generate_order_reply(query, request.tracking_number, logistics_data)
+        if request.order_id:
+            logger.info(f"[{openid}] Process order_id: {request.order_id}")
+            # Step 1: Resolve order_id to waybill_id via WeChat API
+            waybill_id, delivery_name = await fetch_wechat_order_tracking(request.order_id)
+            
+            if waybill_id:
+                # Carrier Mapping Dictionary based on KuaiDi100's company codes
+                carrier_map = {
+                    "圆通速递": "yuantong",
+                    "中通快递": "zhongtong",
+                    "京东物流": "jd",
+                    "韵达快递": "yunda",
+                    "申通快递": "shentong",
+                    "极兔速递": "jtexpress",
+                    "邮政电商标快": "youzhengdsbk",
+                    "德邦快递": "debangkuaidi",
+                    "菜鸟速递": "danniao",
+                    "邮政标准快递": "youzhengbk",
+                    "中通快运": "zhongtongkuaiyun",
+                    "跨越速运": "kuayue",
+                    "德邦物流": "debangwuliu",
+                    "京东快运": "jingdongkuaiyun",
+                    "顺丰快运": "shunfengkuaiyun",
+                    "安能快运": "annengwuliu",
+                    "顺丰速运": "shunfeng" # Common fallback just in case
+                }
+                
+                # Match delivery name exactly, or fallback to the provided com, then to yuantong
+                carrier = carrier_map.get(delivery_name, request.com)
+                carrier = carrier or "yuantong"
+                
+                logger.info(f"[{openid}] Querying KuaiDi100 for tracking_number: {waybill_id} (carrier: {carrier})")
+                logistics_data = await fetch_logistics_info(waybill_id, carrier)
+                final_reply = await generate_order_reply(query, waybill_id, logistics_data)
+            else:
+                final_reply = f"亲，灵豆帮您查了订单（{request.order_id}），可是暂时还没有看到物流单号呢，可能是还没发货，请稍等一下哦~"
         else:
-            final_reply = "亲，请问您可以提供一下您的订单编号或物流单号吗？灵豆马上帮您查询哟~"
+            final_reply = "亲，请问您可以提供一下您的订单编号吗？灵豆马上帮您查询哟~"
         
     elif intent_res.intent == "chat":
         # 拦截：闲聊兜底逻辑
@@ -366,5 +465,5 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
 if __name__ == "__main__":
     import uvicorn
     # Run Gateway on a different port than LingDou (8008)
-    print("🚀 Starting WeChat Shop Intent Gateway on port 8009...")
-    uvicorn.run(app, host="0.0.0.0", port=8009)
+    print("Starting WeChat Shop Intent Gateway on port 8010...")
+    uvicorn.run(app, host="0.0.0.0", port=8010)
