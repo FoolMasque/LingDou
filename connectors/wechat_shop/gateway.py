@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Load API URL from environment or hardcode defaults
-LINGDOU_API_URL = os.getenv("LINGDOU_API_URL", "http://47.100.14.93:8008/api/query") # localhost
+LINGDOU_API_URL = os.getenv("LINGDOU_API_URL", "http://localhost:8008/api/query") # localhost 47.100.14.93
 
 # Hardcode or use specific GATEWAY_ prefix to avoid global ENV conflicts
 OPENAI_API_KEY = os.getenv("GATEWAY_OPENAI_API_KEY", "sk-e5bab9b0d89b42759f0832de6c2ece07")  
@@ -84,10 +84,11 @@ async def get_or_create_lingdou_conversation(openid: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
             # localhost
-            create_url = f"http://47.100.14.93:8008/api/conversations/new?business_id=wechat_shop&user_id={openid}"
+            create_url = f"http://localhost:8008/api/conversations/new?business_id=wechat_shop&user_id={openid}"
             resp = await client.post(create_url)
             resp.raise_for_status()
             
+            data = resp.json()
             data = resp.json()
             new_conv_id = data.get("conversation_id")
             
@@ -166,16 +167,17 @@ async def recognize_intent_and_extract(query: str, history_text: str) -> IntentR
     system_prompt = """你是一个智能客服意图识别引擎-灵豆。
 你的任务是根据【历史对话】和【最新用户输入】，判断用户的核心意图。
 
-意图只允许是以下三种之一：
+意图只允许是以下四种之一：
 1. "product": 商品咨询（问价格、参数、口感、库存、推荐、怎么买等与商品销售相关的问题）。
-2. "order": 订单/物流查询（问发货没、到哪了、单号多少、退换货状态等售后/物流问题）。
-3. "chat": 闲聊/其他（闲聊、打招呼、无意义输入，或者完全无关的问题）。
+2. "logistics": 物流查询（问发货没、到哪了、催发货等物流进度问题）。或者用户单纯发送了一串订单号/快递单号。
+3. "aftersale": 售后/转人工（问怎么退货、退货流程、退款、退换货状态、东西坏了、理赔、投诉，或者直接要求人工客服）。
+4. "chat": 闲聊/其他（打招呼、无意义输入，或者完全无关的问题）。
 
-如果意图是 "chat"，请顺便生成一句简短的拟人化【回复(reply)】引导用户询问商品或订单相关的问题。
-如果意图是 "product" 或 "order"，回复必须**完全留空**（即 reply: ""）。绝对不要编造不存在的订单号或发货状态！！！
+如果意图是 "aftersale"，请顺便生成一句简短的【回复(reply)】，主要是倾听、了解原委、共情、安抚用户情绪。你必须遵守两大禁忌：绝对不要提供任何具体的解决路径（不要让用户去打任何电话、不要说会安排专员等），同时**绝对不要向用户索要订单号、物流单号或其他信息！！！**，只做纯粹的情绪安抚即可。
+对于其他意图（"product", "logistics"），回复必须**完全留空**（即 reply: ""）。绝对不要编造不存在的订单号或发货状态！！！
 
 输出必须是一个合法的 JSON 对象，不包含 Markdown 标记，格式如下：
-{"intent": "product|order|chat", "reply": "你的回复"}
+{"intent": "product|logistics|aftersale|chat", "reply": "你的回复"}
 """
     
     user_prompt = f"【历史对话】\n{history_text}\n\n【最新用户输入】\n{query}"
@@ -374,9 +376,9 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
     extracted_images = []
     
     # 4. Routing Logic
-    if intent_res.intent == "order":
-        # 拦截：订单咨询逻辑
-        logger.info(f"[{openid}] Routing to ORDER handler.")
+    if intent_res.intent == "logistics":
+        # 拦截：物流/发货咨询逻辑
+        logger.info(f"[{openid}] Routing to LOGISTICS handler.")
         if request.order_id:
             logger.info(f"[{openid}] Process order_id: {request.order_id}")
             # Step 1: Resolve order_id to waybill_id via WeChat API
@@ -414,7 +416,12 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
             else:
                 final_reply = f"亲，灵豆帮您查了订单（{request.order_id}），可是暂时还没有看到物流单号呢，可能是还没发货，请稍等一下哦~"
         else:
-            final_reply = "亲，请问您可以提供一下您的订单编号吗？灵豆马上帮您查询哟~"
+            final_reply = "亲，灵豆需要配合具体的订单才能帮您查询物流状态哦~ 如果您遇到售后或退换货问题，请联系人工客服帮您妥善处理哦！"
+        
+    elif intent_res.intent == "aftersale":
+        # 拦截：退换货/投诉兜底逻辑（纯安抚，不提供解决路径）
+        logger.info(f"[{openid}] Routing to AFTERSALE handler.")
+        final_reply = intent_res.reply or "亲，非常抱歉给您带来了不好的体验，您的反馈我们非常重视，正在帮您核实情况呢~"
         
     elif intent_res.intent == "chat":
         # 拦截：闲聊兜底逻辑
