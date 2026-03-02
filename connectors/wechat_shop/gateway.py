@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Load API URL from environment or hardcode defaults
-LINGDOU_API_URL = os.getenv("LINGDOU_API_URL", "http://localhost:8008/api/query") # localhost 47.100.14.93
+LINGDOU_API_URL = os.getenv("LINGDOU_API_URL", "http://47.100.14.93:8008/api/query") # localhost 47.100.14.93
 
 # Hardcode or use specific GATEWAY_ prefix to avoid global ENV conflicts
 OPENAI_API_KEY = os.getenv("GATEWAY_OPENAI_API_KEY", "sk-e5bab9b0d89b42759f0832de6c2ece07")  
@@ -84,7 +84,7 @@ async def get_or_create_lingdou_conversation(openid: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
             # localhost
-            create_url = f"http://localhost:8008/api/conversations/new?business_id=wechat_shop&user_id={openid}"
+            create_url = f"http://47.100.14.93:8008/api/conversations/new?business_id=wechat_shop&user_id={openid}"
             resp = await client.post(create_url)
             resp.raise_for_status()
             
