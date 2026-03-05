@@ -155,7 +155,9 @@ init_db()
 
 class IntentResult(BaseModel):
     intent: str
+    sub_intent: Optional[str] = None
     reply: str = ""
+    order_id: Optional[str] = None
 
 async def recognize_intent_and_extract(query: str, history_text: str) -> IntentResult:
     """
@@ -164,20 +166,35 @@ async def recognize_intent_and_extract(query: str, history_text: str) -> IntentR
     """
     client = openai.AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
     
-    system_prompt = """你是一个智能客服意图识别引擎-灵豆。
+    system_prompt = """你是一个专业的电商智能客服意图识别引擎-灵豆。
 你的任务是根据【历史对话】和【最新用户输入】，判断用户的核心意图。
 
-意图只允许是以下四种之一：
-1. "product": 商品咨询（问价格、参数、口感、库存、推荐、怎么买等与商品销售相关的问题）。
-2. "logistics": 物流查询（问发货没、到哪了、催发货等物流进度问题）。或者用户单纯发送了一串订单号/快递单号。
-3. "aftersale": 售后/转人工（问怎么退货、退货流程、退款、退换货状态、东西坏了、理赔、投诉，或者直接要求人工客服）。
-4. "chat": 闲聊/其他（打招呼、无意义输入，或者完全无关的问题）。
+【主意图分类】(intent只允许是以下四种之一)：
+1. "product": 商品咨询（问价格、参数、口感、库存、推荐、怎么买等）。
+2. "logistics": 物流客观查询（仅仅是客观询问：发货没？到哪了？单号多少？或者无前后文时客观发送单号查件）。绝对不包含带有情绪的催单！
+3. "aftersale": 售后/转人工/客诉（退换货、发错货、投诉、催促发货/抱怨物流慢等）。注意：如果【历史对话】中客服正在请求用户提供退换货的订单凭据，此时用户单纯发送单号，主意图必须是 "aftersale"！
+4. "chat": 闲聊/其他。
 
-如果意图是 "aftersale"，请顺便生成一句简短的【回复(reply)】，主要是倾听、了解原委、共情、安抚用户情绪。你必须遵守两大禁忌：绝对不要提供任何具体的解决路径（不要让用户去打任何电话、不要说会安排专员等），同时**绝对不要向用户索要订单号、物流单号或其他信息！！！**，只做纯粹的情绪安抚即可。
-对于其他意图（"product", "logistics"），回复必须**完全留空**（即 reply: ""）。绝对不要编造不存在的订单号或发货状态！！！
+【售后子意图分类】(仅当intent为"aftersale"时，需进一步判断 sub_intent)：
+- "damage": 破损/少件/瑕疵（商品或内外包装破损、缺件、质量问题等）。
+- "wrong": 发错货（颜色/款式/型号不符）。
+- "refund": 退换货/七天无理由/仅退款（拍错、多拍、不喜欢、降价等）。
+- "urge": 催单/物流投诉（抱怨下单很久没发货、催发货、物流长时间停滞）。
+- "other": 其他售后诉求或单纯要求转人工。如果只是补充发送订单号，请维持原来的故障子分类！
+
+【售后回复SOP严格规则】(仅当 intent 为 "aftersale" 时执行，其他意图的 reply 必须留空 "")：
+1. 必须根据用户的原话进行情绪安抚（如“真的非常抱歉让您收到破损的商品”）。**严禁使用千篇一律的废话。**
+2. 提取订单号：尝试提取订单号填入 `order_id`，若无则填 null。但是**不要**在回复中索要订单号（系统会自动追加）。
+3. **精准索要凭证 (核心SOP)**：
+   - 如果 sub_intent 是 "damage": 必须温柔提示用户后续请准备好送拍【内外包装破损照片】和【商品破损照片】。
+   - 如果 sub_intent 是 "wrong": 必须提示用户后续请准备好【收到的实物照片】。
+   - 如果 sub_intent 是 "refund": 可以善意提醒用户“大部分退换货需保证商品原包装完整，不影响二次销售哦”。
+   - 如果 sub_intent 是 "urge": 安抚“我们一定会催促快递站点加急处理”。
+4. 绝对不允许在回复中包含任何微信号、手机号等站外联系方式！
+5. 你的 reply 生成的句子须完整、温柔。对于转人工等结尾系统会自动处理。
 
 输出必须是一个合法的 JSON 对象，不包含 Markdown 标记，格式如下：
-{"intent": "product|logistics|aftersale|chat", "reply": "你的回复"}
+{"intent": "product|logistics|aftersale|chat", "sub_intent": "damage|wrong|refund|urge|other|null", "reply": "你的定制化回复", "order_id": "提取的订单或者null"}
 """
     
     user_prompt = f"【历史对话】\n{history_text}\n\n【最新用户输入】\n{query}"
@@ -190,12 +207,17 @@ async def recognize_intent_and_extract(query: str, history_text: str) -> IntentR
                 {"role": "user", "content": user_prompt}
             ],
             response_format={ "type": "json_object" },
-            temperature=0.1
+            temperature=0.3
         )
         
         content = response.choices[0].message.content
         data = json.loads(content)
-        return IntentResult(intent=data.get("intent", "product"), reply=data.get("reply", ""))
+        return IntentResult(
+            intent=data.get("intent", "product"), 
+            sub_intent=data.get("sub_intent"),
+            reply=data.get("reply", ""),
+            order_id=data.get("order_id")
+        )
         
     except Exception as e:
         logger.error(f"Intent recognition failed: {e}")
@@ -419,9 +441,41 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
             final_reply = "亲，灵豆需要配合具体的订单才能帮您查询物流状态哦~ 如果您遇到售后或退换货问题，请联系人工客服帮您妥善处理哦！"
         
     elif intent_res.intent == "aftersale":
-        # 拦截：退换货/投诉兜底逻辑（纯安抚，不提供解决路径）
-        logger.info(f"[{openid}] Routing to AFTERSALE handler.")
-        final_reply = intent_res.reply or "亲，非常抱歉给您带来了不好的体验，您的反馈我们非常重视，正在帮您核实情况呢~"
+        # 拦截：精细化售后工单逻辑
+        sub_intent = intent_res.sub_intent
+        logger.info(f"[{openid}] Routing to AFTERSALE handler. Sub-intent: {sub_intent}")
+        
+        # 确定订单
+        def _is_valid_order(oid):
+            if not oid: return False
+            return str(oid).lower().strip() not in ["null", "none", "", "无", "unknown"]
+            
+        extracted_order_id = intent_res.order_id if _is_valid_order(intent_res.order_id) else (request.order_id if _is_valid_order(request.order_id) else None)
+        
+        # 预警标签
+        tag_map = {
+            "damage": "🚨破损/少件/瑕疵",
+            "wrong": "📦发错货",
+            "refund": "💸退款/七天无理由",
+            "urge": "🔥催单/停滞",
+            "other": "🔧其他售后诉求"
+        }
+        issue_tag = tag_map.get(sub_intent, "🔧其他售后诉求") if sub_intent else "未知售后"
+        
+        # TODO: 以下打印改为真实企微/工单API推送
+        if extracted_order_id:
+            logger.info(f"【商户工单推送模拟】分类: [{issue_tag}] | 用户ID: {openid} | 订单: {extracted_order_id} | 诉求原话: {query[:50]}")
+        else:
+            logger.info(f"【预警】分类: [{issue_tag}] | 用户ID: {openid} | 订单: 暂未提供 | 提醒介入安抚")
+
+        base_reply = intent_res.reply.strip() if intent_res.reply else "亲，非常抱歉给您带来了不好的体验。"
+        
+        if extracted_order_id:
+            logger.info(f"[{openid}] [商户通知模拟] 接收到用户的售后/投诉诉求，订单号 {extracted_order_id}，请商户及时在微信端核实处理。")
+            self_service_guide = "如果您需要【退换货】，您可以快捷自助操作：打开【微信】->底部【我】->【订单与卡包】->进入找到对应订单->点击【申请售后】->【退货/退款】即可。"
+            final_reply = f"{base_reply} {self_service_guide} 对于投诉或其他复杂问题，我已经为您加急转交人工专员，请亲亲耐心等待处理哦~"
+        else:
+            final_reply = f"{base_reply} 为了帮您进一步核实情况，请提供一下相关的订单号。如果是退换货问题，您也可以直接在【微信】->【我】->【订单与卡包】里找到该订单，进入后快捷自助申请售后哦~"
         
     elif intent_res.intent == "chat":
         # 拦截：闲聊兜底逻辑
