@@ -56,10 +56,13 @@ def init_db():
             last_active DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    conn.commit()
-    conn.close()
+# --- Configuration Cache / Shop Config Fetching ---
+# 既然不能硬挂载，且未来会无限扩展，最优雅的解法是：
+# 网关（Gateway）保持"无状态化"，由外部请求的 URL 路径来提供所有动态关系。
+# (此段原硬编码字典已删除)
+# ---
 
-async def get_or_create_lingdou_conversation(openid: str) -> str:
+async def get_or_create_lingdou_conversation(openid: str, business_id: str) -> str:
     """Gets valid conversation_id. Creates new one if none exists or if older than 2 hours."""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -84,7 +87,7 @@ async def get_or_create_lingdou_conversation(openid: str) -> str:
     async with httpx.AsyncClient() as client:
         try:
             # localhost
-            create_url = f"http://47.100.14.93:8008/api/conversations/new?business_id=wechat_shop&user_id={openid}"
+            create_url = f"http://47.100.14.93:8008/api/conversations/new?business_id={business_id}&user_id={openid}"
             resp = await client.post(create_url)
             resp.raise_for_status()
             
@@ -158,6 +161,7 @@ class IntentResult(BaseModel):
     sub_intent: Optional[str] = None
     reply: str = ""
     order_id: Optional[str] = None
+    complaint_summary: Optional[str] = None
 
 async def recognize_intent_and_extract(query: str, history_text: str) -> IntentResult:
     """
@@ -192,8 +196,10 @@ async def recognize_intent_and_extract(query: str, history_text: str) -> IntentR
    - 如果 sub_intent 是 "urge": 安抚“我们一定会催促快递站点加急处理”。
 4. 绝对不允许在回复中包含任何微信号、手机号等站外联系方式！
 5. 你的 reply 生成的句子须完整、温柔。对于转人工等结尾系统会自动处理。
+# 6. 提取核心诉求：无论经历多少轮对话，请高度凝练归纳用户的核心诉求填入 `complaint_summary`（限20字内）。如果不是售后意图，可填 null。
 
 输出必须是一个合法的 JSON 对象，不包含 Markdown 标记，格式如下：
+# {"intent": "product|logistics|aftersale|chat", "sub_intent": "damage|wrong|refund|urge|other|null", "reply": "你的定制化回复", "order_id": "提取的订单或者null", "complaint_summary": "一句话归纳诉求"}
 {"intent": "product|logistics|aftersale|chat", "sub_intent": "damage|wrong|refund|urge|other|null", "reply": "你的定制化回复", "order_id": "提取的订单或者null"}
 """
     
@@ -216,7 +222,8 @@ async def recognize_intent_and_extract(query: str, history_text: str) -> IntentR
             intent=data.get("intent", "product"), 
             sub_intent=data.get("sub_intent"),
             reply=data.get("reply", ""),
-            order_id=data.get("order_id")
+            order_id=data.get("order_id"),
+            complaint_summary=data.get("complaint_summary")
         )
         
     except Exception as e:
@@ -237,18 +244,19 @@ class GatewayResponse(BaseModel):
     reply: str
     intent_detected: str
     images: Optional[List[str]] = []
+    issue_tag: Optional[str] = None
 
 # --- WeChat API & Logistics Handlers ---
 
-async def fetch_wechat_order_tracking(order_id: str) -> Tuple[Optional[str], Optional[str]]:
+async def fetch_wechat_order_tracking(app_id: str, order_id: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Fetches WeChat access token and then fetches order details to extract waybill_id and carrier.
     Returns (waybill_id, delivery_name_or_code)
     """
     async with httpx.AsyncClient() as client:
         try:
-            # 1. Get Token
-            token_url = "http://47.100.14.93/backend//lingdou/wx_store/wxad76052896802106/token?secret=1024%40Yinyu"
+            # 1. Get Token (Dynamic Store App ID)
+            token_url = f"http://47.100.14.93/backend//lingdou/wx_store/{app_id}/token?secret=1024%40Yinyu"
             token_resp = await client.get(token_url, timeout=10.0)
             token_resp.raise_for_status()
             token_data = token_resp.json()
@@ -373,10 +381,10 @@ async def generate_order_reply(query: str, tracking_number: str, logistics_data:
 
 # --- Main Route ---
 
-@app.post("/webhook", response_model=GatewayResponse)
-async def wechat_shop_webhook(request: WeChatWebhookRequest):
+@app.post("/webhook/{business_id}/{app_id}", response_model=GatewayResponse)
+async def wechat_shop_webhook(business_id: str, app_id: str, request: WeChatWebhookRequest):
     """
-    The main entry point for WeChat Shop messages.
+    The main dynamic entry point for multi-tenant WeChat Shop messages.
     """
     openid = request.openid
     query = request.query
@@ -396,6 +404,7 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
     
     final_reply = ""
     extracted_images = []
+    final_issue_tag = None
     
     # 4. Routing Logic
     if intent_res.intent == "logistics":
@@ -404,7 +413,7 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
         if request.order_id:
             logger.info(f"[{openid}] Process order_id: {request.order_id}")
             # Step 1: Resolve order_id to waybill_id via WeChat API
-            waybill_id, delivery_name = await fetch_wechat_order_tracking(request.order_id)
+            waybill_id, delivery_name = await fetch_wechat_order_tracking(app_id, request.order_id)
             
             if waybill_id:
                 # Carrier Mapping Dictionary based on KuaiDi100's company codes
@@ -460,18 +469,35 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
             "urge": "🔥催单/停滞",
             "other": "🔧其他售后诉求"
         }
-        issue_tag = tag_map.get(sub_intent, "🔧其他售后诉求") if sub_intent else "未知售后"
+        issue_tag = tag_map.get(sub_intent, "🔧未知售后")
         
-        # TODO: 以下打印改为真实企微/工单API推送
+        # --- 提取真实诉求原话 ---
+        # 原始化抽取：防止此时用户只发了一个孤零零的订单号，我们去历史记录里捞上一条原话
+        actual_complaint = query.strip()
+        if extracted_order_id and (len(actual_complaint) < 10 or "订单号" in actual_complaint or extracted_order_id in actual_complaint):
+            user_lines = [line.replace("用户: ", "").strip() for line in history_text.split('\n') if line.startswith("用户: ")]
+            if len(user_lines) >= 2:
+                # user_lines[-1] 是当前刚发送的订单号，user_lines[-2] 是上一轮真正发牢骚的话
+                actual_complaint = user_lines[-2]
+                
+        # TODO: 使用 LLM 智能归纳的诉求
+        # actual_complaint = intent_res.complaint_summary if intent_res.complaint_summary else actual_complaint
+        
+        actual_complaint_short = actual_complaint[:50]
+        
+        # 返回到response
         if extracted_order_id:
-            logger.info(f"【商户工单推送模拟】分类: [{issue_tag}] | 用户ID: {openid} | 订单: {extracted_order_id} | 诉求原话: {query[:50]}")
+            log_msg = f"【商户工单推送模拟】分类: [{issue_tag}] | 用户ID: {openid} | 订单: {extracted_order_id} | 诉求原话: {actual_complaint_short} | 提醒: 请商户及时核实处理。"
+            logger.info(log_msg)
+            final_issue_tag = log_msg
         else:
-            logger.info(f"【预警】分类: [{issue_tag}] | 用户ID: {openid} | 订单: 暂未提供 | 提醒介入安抚")
+            log_msg = f"【预警】分类: [{issue_tag}] | 用户ID: {openid} | 订单: 暂未提供 | 提醒介入安抚"
+            logger.info(log_msg)
+            final_issue_tag = log_msg
 
         base_reply = intent_res.reply.strip() if intent_res.reply else "亲，非常抱歉给您带来了不好的体验。"
         
         if extracted_order_id:
-            logger.info(f"[{openid}] [商户通知模拟] 接收到用户的售后/投诉诉求，订单号 {extracted_order_id}，请商户及时在微信端核实处理。")
             self_service_guide = "如果您需要【退换货】，您可以快捷自助操作：打开【微信】->底部【我】->【订单与卡包】->进入找到对应订单->点击【申请售后】->【退货/退款】即可。"
             final_reply = f"{base_reply} {self_service_guide} 对于投诉或其他复杂问题，我已经为您加急转交人工专员，请亲亲耐心等待处理哦~"
         else:
@@ -490,11 +516,11 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
         async with httpx.AsyncClient() as client:
             try:
                 # Retrieve the real LingDou conversation_id instead of using openid
-                lingdou_conv_id = await get_or_create_lingdou_conversation(openid)
+                lingdou_conv_id = await get_or_create_lingdou_conversation(openid, business_id)
                 
                 payload = {
                     "query": query,
-                    "business_id": "wechat_shop",
+                    "business_id": business_id,
                     "conversation_id": lingdou_conv_id,  
                     "streaming": False
                 }
@@ -520,7 +546,8 @@ async def wechat_shop_webhook(request: WeChatWebhookRequest):
     return GatewayResponse(
         reply=final_reply, 
         intent_detected=intent_res.intent,
-        images=extracted_images
+        images=extracted_images,
+        issue_tag=final_issue_tag
     )
 
 if __name__ == "__main__":
