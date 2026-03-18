@@ -2,6 +2,7 @@ import json
 import os
 import time
 import requests
+import argparse
 from typing import List, Dict, Set
 from datetime import datetime
 
@@ -17,19 +18,35 @@ except ImportError:
 # Configuration
 file_dir = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(file_dir, "config.json")
-STATE_FILE = os.path.join(file_dir, "synced_ids.json")
+# OLD STATE_FILE dependency removed
 LINGDOU_API_URL = "http://localhost:8008/api/process_data"  # Default local API
 
 class WeChatSyncService:
-    def __init__(self):
+    def __init__(self, app_id: str = None, business_id: str = None):
         self.config = self._load_config()
+        
+        # 1. 优先使用命令行传参，没有则从遗留 config 里靠正则/切片提取
+        self.app_id = app_id
+        if not self.app_id:
+            token_url = self.config.get("token_url", "")
+            if "wx_store/" in token_url:
+                self.app_id = token_url.split("wx_store/")[1].split("/")[0]
+            else:
+                self.app_id = "default_store"
+                
+        self.business_id = business_id or self.config.get("business_id", "wechat_shop")
+        
+        # 2. 【多租户核心】每个小店必须拥有独立的状态记录文件！
+        self.state_file = os.path.join(file_dir, f"synced_ids_{self.app_id}.json")
         self.state = self._load_state()
+        
+        # 3. 动态拼装内部 token
+        dynamic_token_url = f"http://47.100.14.93/backend//lingdou/wx_store/{self.app_id}/token?secret=1024@Yinyu"
         
         # Initialize connector
         self.connector = WeChatShopConnector(
-            token_url=self.config.get("token_url")
+            token_url=dynamic_token_url
         )
-        self.business_id = self.config.get("business_id", "wechat_shop")
 
     def _load_config(self) -> Dict:
         if not os.path.exists(CONFIG_FILE):
@@ -40,14 +57,14 @@ class WeChatSyncService:
             return json.load(f)
 
     def _load_state(self) -> Set[str]:
-        if not os.path.exists(STATE_FILE):
+        if not os.path.exists(self.state_file):
             return set()
-        with open(STATE_FILE, 'r', encoding='utf-8') as f:
+        with open(self.state_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return set(data.get("synced_ids", []))
 
     def _save_state(self):
-        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+        with open(self.state_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "last_sync": datetime.now().isoformat(),
                 "synced_ids": list(self.state)
@@ -187,5 +204,11 @@ class WeChatSyncService:
             print(f"Push failed: {e}")
 
 if __name__ == "__main__":
-    syncer = WeChatSyncService()
+    parser = argparse.ArgumentParser(description="Multi-tenant WeChat Shop Sync Service")
+    parser.add_argument("--app_id", type=str, help="WeChat Shop AppID (e.g. wxad76052896802106)")
+    parser.add_argument("--business_id", type=str, help="LingDou Knowledge Base ID (e.g. wechat_shop)")
+    
+    args = parser.parse_args()
+    
+    syncer = WeChatSyncService(app_id=args.app_id, business_id=args.business_id)
     syncer.run_sync()
