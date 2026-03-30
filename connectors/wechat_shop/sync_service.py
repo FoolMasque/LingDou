@@ -112,10 +112,13 @@ class WeChatSyncService:
             "description": desc_text,  # Full text description for embedding
             "specifications": attrs,   # Structured specs
             "detail_images": all_imgs,
-            # Standard LingDou fields fallback
-            "商品名": raw_product.get("title"),
-            "价格": price,
-            "参数": attrs
+            # 适配通用知识库配置字段 (Fallback)
+            # "title": raw_product.get("title"),
+            # "content": desc_text,
+            # 原本的中文后备字段
+            # "商品名": raw_product.get("title"),
+            # "价格": price,
+            # "参数": attrs
         }
         
         # Map specific image fields for LingDou

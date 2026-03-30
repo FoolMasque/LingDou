@@ -85,14 +85,26 @@
    - [x] 知识图谱抽取可配置（entity_extract_rounds=0关闭KG）
    - [x] 缓存机制（查询结果缓存）
 
-3. **多业务扩展**
+3. **多业务扩展与隔离**
    - [x] 动态业务创建（API调用时自动创建）
-   - [x] 手动业务注册API（/api/business/register）
+   - [x] 手动业务注册API（`/api/business/register`）
+   - [x] 多租户网关架构（`/webhook/{business_id}/{app_id}`）
+   - [x] 业务独立配置（如自定义输出指令、图文识别字段映射等）
 
-4. **高级查询功能**
+4. **微信小店集成与意图识别**
+   - [x] 独立连接器：微信小店 API 包装器及独立逻辑
+   - [x] 智能意图分类分流：订单查询、商品咨询和售后维权分流处理
+   - [x] 售后流定制化：前置索要凭证并在后台结构化推送，及针对用户的情绪安抚（一刀切安抚策略）
+
+5. **会话数据管理**
+   - [x] 会话流式输出（SSE结构化处理：包含类型、元数据等信息）
+   - [x] 动态更新用户画像（`/api/conversations/{conversation_id}/metadata`）
+   - [x] 会话数据清理与导出机制
+
+6. **高级查询功能**
    - [ ] 搜索结果排序优化
 
-5. **接口拓展**
+7. **接口拓展**
    - [ ] 网站集成
    - [x] 微信智能客服
 
@@ -382,8 +394,46 @@ curl -X POST "http://localhost:8008/api/business/register" \
 ### 会话管理接口
 
 #### 1.创建会话
+```http
 POST /api/conversations/new?business_id=toilet&user_id=lyq HTTP/1.1
 Host: 47.100.14.93:8008
+```
+
+#### 2. 动态更新会话元数据（例如用户画像）
+```bash
+PUT /api/conversations/{conversation_id}/metadata
+Content-Type: application/json
+```
+
+**参数**:
+- 请求体为 JSON 对象，包含需要更新的元数据键值对。
+- 例如，使用 `user_persona` 字段来注入用户动态画像，系统会在后续对话中自动将该画像注入 LLM 的系统提示词中。
+
+**示例**：
+```bash
+curl -X PUT "http://localhost:8008/api/conversations/test_conv_123/metadata" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_persona": "我是一名30岁的程序员，最近经常加班，有点颈椎痛。请在回答时注意这些背景。"
+  }'
+```
+
+#### 3. 导出会话记录
+```bash
+GET /api/conversations/{conversation_id}/export?format=json
+```
+
+**参数**:
+- `format`: 导出的格式（`json` 或 `text`），默认为 `json`。
+
+#### 4. 清理旧会话
+```bash
+POST /api/conversations/cleanup?days=7
+```
+
+**参数**:
+- `days`: (int) 保留的最近天数，早于该天数的会话将被随时清理（默认为7）。
+- 由于清理逻辑可能耗时，接口设计为异步处理（使用 FastAPI 后台任务执行）。
 
 
 ### 业务管理接口
@@ -424,4 +474,39 @@ curl -X PUT "http://localhost:8008/api/businesses/furniture/config" \
         "product_image": "main_pic"
     }
   }'
+```
+
+### 文档录入与管理接口
+
+#### 1. 单文档与批量文档上传（支持覆盖/重置）
+```text
+POST /api/ingest/document
+POST /api/ingest/batch_documents
+```
+
+**新增参数**:
+- `overwrite`: (bool) 可选参数，默认为 `false`。
+  - 如果传 `true`，系统在录入新文档前，会自动根据**上传的文件名**扫描并删除已属于该业务的旧版本文档分块与知识图谱实体，确保不存在新旧版本知识冲突的问题。
+
+**示例**（携带 overwrite 参数）：
+```bash
+curl -X POST "http://localhost:8008/api/ingest/document" \
+  -F "file=@/path/to/your_document.pdf" \
+  -F "business_id=ARglasses" \
+  -F "doc_type=manual" \
+  -F "overwrite=true"
+```
+
+#### 2. 删除指定文档的 RAG 知识
+```bash
+DELETE /api/ingest/document/{business_id}/{doc_id}
+```
+
+**特性**:
+- `doc_id` 传递文档的原始文件名（需进行 URL 编码，例如 `智能眼镜.pdf` -> `%E6%99%BA%E8%83%BD%E7%9C%BC%E9%95%9C.pdf`）。
+- 内部自动进行哈希映射，底层同步销毁存在于 LightRAG 向量库与图数据库里的相关实体特征，以保证数据干净无残留。
+
+**示例**：
+```bash
+curl -X DELETE "http://localhost:8008/api/ingest/document/ARglasses/test.pdf"
 ```

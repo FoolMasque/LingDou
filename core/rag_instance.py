@@ -777,7 +777,8 @@ class ProductionRAGInstance:
             self,
             query: str,
             history=None,  # List[ChatMessage] = None,
-            mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid"
+            mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
+            conversation_id: str = None
     ) -> str:
         """带历史的查询"""
         if history is None:
@@ -790,9 +791,23 @@ class ProductionRAGInstance:
         from api.routes import Dependencies
         core_system = Dependencies.get_core_system()
         business_config = core_system.businesses.get(self.business_id)
+
+        # 尝试提取人物设定
+        user_persona = ""
+        if conversation_id:
+            conv_mgr = Dependencies.get_conversation_manager()
+            if conv_mgr:
+                conv = await conv_mgr.get_conversation(conversation_id)
+                if conv and conv.metadata:
+                    user_persona = conv.metadata.get("user_persona", "")
         
         # 构建用户提示词
         base_instruction = f"请基于{self.business_id}业务的知识库回答问题。"
+        
+        # 注入人物设定
+        if user_persona:
+            base_instruction += f"\n\n【必须遵守的人物设定】：当前和你对话的用户背景为：{user_persona}。请你在回答时充分考虑到这个背景身份，在称呼、语气以及给出的建议中体现出针对性。"
+            
         custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
         
         if custom_instruction:
@@ -823,7 +838,8 @@ class ProductionRAGInstance:
                                              user_images: List[str] = None,
                                              history=None,
                                              mode: Literal[
-                                                 "local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid") -> \
+                                                 "local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
+                                             conversation_id: str = None) -> \
     Dict[str, Any]:
         """
         多模态查询 - 用户图片 + 库中图片
@@ -889,10 +905,21 @@ class ProductionRAGInstance:
                 core_system = Dependencies.get_core_system()
                 business_config = core_system.businesses.get(self.business_id)
                 custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
+                # 尝试提取人物设定
+                user_persona = ""
+                if conversation_id:
+                    conv_mgr = Dependencies.get_conversation_manager()
+                    if conv_mgr:
+                        conv = await conv_mgr.get_conversation(conversation_id)
+                        if conv and conv.metadata:
+                            user_persona = conv.metadata.get("user_persona", "")
                 
                 user_prompt_text = "请用简洁自然的方式回答问题"
                 if custom_instruction:
                     user_prompt_text = f"回答要求：{custom_instruction}"
+                    
+                if user_persona:
+                    user_prompt_text = f"【当前对话用户的背景】：{user_persona}。\n\n" + user_prompt_text
 
                 final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
                 
@@ -1426,6 +1453,43 @@ class ProductionRAGInstance:
         except ImportError:
             return False
 
+    async def delete_document(self, doc_id: str) -> Dict[str, Any]:
+        """删除指定文档的全部关联知识"""
+        if not self.lightrag_instance:
+            return {"status": "error", "message": "LightRAG 未初始化"}
+        try:
+            logger.info(f"查找并清理文档数据: {doc_id}")
+            doc_status_kv = self.lightrag_instance.doc_status
+            target_doc_id = None
+            
+            # 尝试直接读取 JSON 文件匹配内部 hash doc_id
+            import json
+            from pathlib import Path
+            status_file = Path(self.lightrag_instance.working_dir) / "kv_store_doc_status.json"
+            if status_file.exists():
+                with open(status_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    for d_id, d_info in data.items():
+                        # 精确匹配或子串匹配文件名
+                        if d_info.get("file_path", "") == doc_id or doc_id in d_info.get("file_path", ""):
+                            target_doc_id = d_id
+                            break
+                            
+            if not target_doc_id:
+                # 兼容：如果传入的就是底层 hash doc_id，直接使用
+                if doc_id.startswith("doc-"):
+                    target_doc_id = doc_id
+                else:
+                    return {"status": "error", "message": f"未找到名为 {doc_id} 的文档记录"}
+                    
+            logger.info(f"映射文件名 {doc_id} 到底层 ID: {target_doc_id}，准备删除")
+            # 调用 LightRAG 的删除接口
+            await self.lightrag_instance.adelete_by_doc_id(target_doc_id)
+            return {"status": "success", "message": f"成功删除文档: {doc_id} ({target_doc_id})"}
+        except Exception as e:
+            logger.error(f"清理文档失败 {doc_id}: {e}", exc_info=True)
+            return {"status": "error", "message": str(e)}
+
     # ========== 清理方法 ==========
     def cleanup(self):
         """清理资源（预留，当前无需清理）"""
@@ -1438,7 +1502,8 @@ class ProductionRAGInstance:
             doc_type: str = "manual",
             use_gpu: Optional[bool] = None,
             start_page: Optional[int] = None,
-            end_page: Optional[int] = None
+            end_page: Optional[int] = None,
+            overwrite: bool = False
     ) -> Dict[str, Any]:
         """
         文档录入（使用 RAGAnything 的完整流程）
@@ -1469,6 +1534,12 @@ class ProductionRAGInstance:
                     logger.warning("请求使用GPU解析，但未检测到可用GPU，自动回退到CPU")
 
             logger.info(f"文档解析将使用 {'GPU' if gpu_enabled else 'CPU'}")
+
+            # 处理覆盖逻辑
+            if overwrite:
+                doc_name_to_delete = Path(file_path).name # 或者考虑使用 stem 根据 RAGAnything 设定
+                logger.info(f"【覆盖模式开启】 正在清理可能存在的旧版本文档数据: {doc_name_to_delete}")
+                await self.delete_document(doc_name_to_delete)
 
             # 智能选择解析方式
             selected_parse_method, pdf_stats = await self._resolve_parse_method(
@@ -1568,7 +1639,8 @@ class ProductionRAGInstance:
             self,
             file_paths: List[str],
             doc_type: str = "manual",
-            use_gpu: bool = False
+            use_gpu: bool = False,
+            overwrite: bool = False
     ) -> Dict[str, Any]:
         """批量文档录入"""
         if not self.rag_anything:
@@ -1587,7 +1659,8 @@ class ProductionRAGInstance:
                 result = await self.insert_document(
                     file_path=file_path,
                     doc_type=doc_type,
-                    use_gpu=use_gpu
+                    use_gpu=use_gpu,
+                    overwrite=overwrite
                 )
 
                 results.append(result)

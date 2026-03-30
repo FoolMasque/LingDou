@@ -244,7 +244,8 @@ async def _handle_blocking_query(request: QueryRequest,
             query=request.query,
             user_images=user_images_base64,
             history=history,
-            mode=request.mode
+            mode=request.mode,
+            conversation_id=conversation_id
         )
         result = result_data["result"]
         # TODO：library_images_count目前全为空
@@ -256,7 +257,8 @@ async def _handle_blocking_query(request: QueryRequest,
             business_id=request.business_id,
             query=request.query,
             history=history,
-            mode=request.mode
+            mode=request.mode,
+            conversation_id=conversation_id
         )
         library_images_count = 0
 
@@ -316,7 +318,8 @@ async def _handle_streaming_query(request: QueryRequest,
                     query=request.query,
                     user_images=user_images_base64,
                     history=history,
-                    mode=request.mode
+                    mode=request.mode,
+                    conversation_id=conversation_id
                 )
             else:
                 # 纯文本流式查询
@@ -325,7 +328,8 @@ async def _handle_streaming_query(request: QueryRequest,
                     business_id=request.business_id,
                     query=request.query,
                     history=history,
-                    mode=request.mode
+                    mode=request.mode,
+                    conversation_id=conversation_id
                 )
 
             # 逐块发送数据
@@ -668,6 +672,20 @@ async def delete_conversation(conversation_id: str):
     return {"success": True, "message": "会话已删除"}
 
 
+@router.put("/conversations/{conversation_id}/metadata")
+async def update_conversation_metadata(conversation_id: str, metadata: Dict[str, Any]):
+    """更新会话元数据（例如更新 user_persona）"""
+    if not Dependencies.conversation_manager:
+        raise HTTPException(status_code=500, detail="会话管理器未初始化")
+
+    success = await Dependencies.conversation_manager.update_metadata(conversation_id, metadata)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    return {"success": True, "message": "会话元数据已更新"}
+
+
 
 
 @router.get("/conversations/{conversation_id}/export")
@@ -854,6 +872,7 @@ async def upload_document(
         business_id: str = Form(...),
         doc_type: str = Form("manual"),
         use_gpu: bool = Form(False),
+        overwrite: bool = Form(False),
         background_tasks: BackgroundTasks = BackgroundTasks(),
         core_system=Depends(Dependencies.get_core_system)
 ):
@@ -899,7 +918,8 @@ async def upload_document(
         result = await rag_instance.insert_document(
             file_path=str(temp_file),
             doc_type=doc_type,
-            use_gpu=use_gpu
+            use_gpu=use_gpu,
+            overwrite=overwrite
         )
 
         # 6. 返回结果
@@ -942,6 +962,7 @@ async def upload_batch_documents(
         business_id: str = Form(...),
         doc_type: str = Form("manual"),
         use_gpu: bool = Form(False),
+        overwrite: bool = Form(False),
         core_system=Depends(Dependencies.get_core_system)
 ):
     """批量上传文档"""
@@ -978,7 +999,8 @@ async def upload_batch_documents(
         result = await rag_instance.insert_document_batch(
             file_paths=temp_files,
             doc_type=doc_type,
-            use_gpu=use_gpu
+            use_gpu=use_gpu,
+            overwrite=overwrite
         )
 
         return {
@@ -1004,6 +1026,27 @@ async def upload_batch_documents(
 
         if temp_files:
             logger.info(f"清理了 {len(temp_files)} 个临时文件")
+
+@router.delete("/ingest/document/{business_id}/{doc_id}")
+async def delete_document(
+        business_id: str,
+        doc_id: str,
+        core_system=Depends(Dependencies.get_core_system)
+):
+    """
+    删除 RAG 引擎中的某篇文档及其产生的知识分块与实体图谱。
+    doc_id 通常是该文档的原始文件名。
+    """
+    if business_id not in core_system.rag_instances:
+        raise HTTPException(status_code=404, detail="业务实例不存在")
+        
+    rag_instance = core_system.rag_instances[business_id]
+    result = await rag_instance.delete_document(doc_id)
+    
+    if result.get("status") == "success":
+        return result
+    else:
+        raise HTTPException(status_code=500, detail=result.get("message", "删除失败"))
 
 
 @router.post("/ingest/folder")

@@ -648,6 +648,23 @@ class ConversationManager:
 
         self._cache[conversation.id] = conversation
 
+    async def update_metadata(self, conversation_id: str, metadata: Dict[str, Any]) -> bool:
+        """更新会话的元数据（例如更新人物设定）"""
+        conversation = await self.get_conversation(conversation_id)
+        if not conversation:
+            return False
+            
+        if not conversation.metadata:
+            conversation.metadata = {}
+            
+        # 增量更新
+        conversation.metadata.update(metadata)
+        
+        # 保存并更新缓存
+        await self.storage.save(conversation)
+        self._update_cache(conversation)
+        return True
+
     async def list_conversations(
             self,
             business_id: Optional[str] = None,

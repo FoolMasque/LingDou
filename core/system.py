@@ -368,7 +368,7 @@ class ProductionCoreSystem:
                 item["detail_images"] = mapping.local_path
                 item["detail_images_remote"] = mapping.remote_url
 
-    async def query(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None) -> str:
+    async def query(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None, conversation_id: str = None) -> str:
         """纯文本查询接口"""
         if history is None:
             history = field(default_factory=list)
@@ -378,7 +378,7 @@ class ProductionCoreSystem:
 
         rag = self.rag_instances[business_id]
         logger.info(f"[{business_id}] 执行查询，模式: {mode}, 历史记录数: {len(history) if history else 0}")
-        result = await rag.aquery_with_history(query=query, mode=mode, history=history)
+        result = await rag.aquery_with_history(query=query, mode=mode, history=history, conversation_id=conversation_id)
 
         return result
 
@@ -387,7 +387,8 @@ class ProductionCoreSystem:
                                query: str,
                                user_images: List[str] = None,
                                history=None,
-                               mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid")) -> Dict[str, Any]:
+                               mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"),
+                               conversation_id: str = None) -> Dict[str, Any]:
         """
         多模态查询接口
 
@@ -418,14 +419,15 @@ class ProductionCoreSystem:
             query=query,
             user_images=user_images,
             history=history,
-            mode=mode
+            mode=mode,
+            conversation_id=conversation_id
         )
 
         return result_data
 
     # ====== 流式方法 ======
 
-    async def query_stream(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None):
+    async def query_stream(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None, conversation_id: str = None):
         """
         纯文本流式查询
 
@@ -442,7 +444,7 @@ class ProductionCoreSystem:
 
         rag = self.rag_instances[business_id]
 
-        async for chunk in rag.aquery_stream(query, business_id, mode, history):
+        async for chunk in rag.aquery_stream(query, business_id, mode, history, conversation_id=conversation_id):
             yield chunk
 
     async def query_multimodal_stream(self,
@@ -450,7 +452,8 @@ class ProductionCoreSystem:
                                       query: str,
                                       user_images: List[str] = None,
                                       history=None,
-                                      mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid"):
+                                      mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
+                                      conversation_id: str = None):
         """
         多模态流式查询
 
@@ -467,7 +470,7 @@ class ProductionCoreSystem:
 
         rag = self.rag_instances[business_id]
 
-        async for chunk in rag.aquery_multimodal_stream(query, business_id, user_images, mode, history):
+        async for chunk in rag.aquery_multimodal_stream(query, business_id, user_images, mode, history, conversation_id=conversation_id):
             yield chunk
 
     def get_business_status(self, business_id: str) -> Dict[str, Any]:
