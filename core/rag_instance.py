@@ -1458,34 +1458,47 @@ class ProductionRAGInstance:
         if not self.lightrag_instance:
             return {"status": "error", "message": "LightRAG 未初始化"}
         try:
+            # 关键：如果有其他后台脚本（如 crawler）向目录写了数据，FastAPI长期运行的实例内存中不会有记录。
+            # 为了防止读到旧缓存（导致“Not found”错误，或者更糟：将旧的向量覆盖写入磁盘产生数据损坏），
+            # 必须在执行删除前，强制重新从磁盘加载一次底层所有的 KV/Vector/Graph 存储
+            logger.info("同步磁盘数据，重新加载 LightRAG 缓存...")
+            await self._create_lightrag()
+
+            from pathlib import Path
+            import json
+            
             logger.info(f"查找并清理文档数据: {doc_id}")
             doc_status_kv = self.lightrag_instance.doc_status
-            target_doc_id = None
+            target_doc_ids = []
+            
+            search_stem = Path(doc_id).stem
             
             # 尝试直接读取 JSON 文件匹配内部 hash doc_id
-            import json
-            from pathlib import Path
             status_file = Path(self.lightrag_instance.working_dir) / "kv_store_doc_status.json"
             if status_file.exists():
                 with open(status_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for d_id, d_info in data.items():
-                        # 精确匹配或子串匹配文件名
-                        if d_info.get("file_path", "") == doc_id or doc_id in d_info.get("file_path", ""):
-                            target_doc_id = d_id
-                            break
+                        # 匹配去掉后缀名后的基础文件名 (支持被 RAGAnything 转为 .txt 的情况)
+                        d_path_stem = Path(d_info.get("file_path", "")).stem
+                        if d_path_stem == search_stem:
+                            target_doc_ids.append(d_id)
                             
-            if not target_doc_id:
+            if not target_doc_ids:
                 # 兼容：如果传入的就是底层 hash doc_id，直接使用
-                if doc_id.startswith("doc-"):
-                    target_doc_id = doc_id
+                if doc_id.startswith("doc-") or ":" in doc_id:
+                    target_doc_ids = [doc_id]
                 else:
                     return {"status": "error", "message": f"未找到名为 {doc_id} 的文档记录"}
                     
-            logger.info(f"映射文件名 {doc_id} 到底层 ID: {target_doc_id}，准备删除")
-            # 调用 LightRAG 的删除接口
-            await self.lightrag_instance.adelete_by_doc_id(target_doc_id)
-            return {"status": "success", "message": f"成功删除文档: {doc_id} ({target_doc_id})"}
+            logger.info(f"映射文件名 {doc_id} 到底层 ID: {target_doc_ids}，准备批量删除")
+            
+            # 调用 LightRAG 的删除接口，删除所有匹配到的历史版本记录
+            for t_id in target_doc_ids:
+                await self.lightrag_instance.adelete_by_doc_id(t_id)
+                logger.info(f"已清理底层记录: {t_id}")
+                
+            return {"status": "success", "message": f"成功删除文档: {doc_id} (共 {len(target_doc_ids)} 条记录)"}
         except Exception as e:
             logger.error(f"清理文档失败 {doc_id}: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}

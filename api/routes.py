@@ -1040,13 +1040,17 @@ async def delete_document(
     if business_id not in core_system.rag_instances:
         raise HTTPException(status_code=404, detail="业务实例不存在")
         
+    await core_system._ensure_rag_initialized(business_id)
+        
     rag_instance = core_system.rag_instances[business_id]
     result = await rag_instance.delete_document(doc_id)
     
     if result.get("status") == "success":
         return result
     else:
-        raise HTTPException(status_code=500, detail=result.get("message", "删除失败"))
+        msg = result.get("message", "删除失败")
+        status_code = 404 if "未找到" in msg else 500
+        raise HTTPException(status_code=status_code, detail=msg)
 
 
 @router.post("/ingest/folder")
