@@ -137,7 +137,8 @@ async def query(request: QueryRequest,
                     # 业务ID不匹配，创建新会话（清空历史记录）
                     logger.warning(f"会话 {request.conversation_id} 的业务ID ({existing_conv.business_id}) 与请求的业务ID ({request.business_id}) 不匹配，创建新会话")
                     conversation = await conversation_manager.create_conversation(
-                        business_id=request.business_id
+                        business_id=request.business_id,
+                        metadata=request.metadata
                     )
                     # 新会话没有历史记录
                     message_list = []
@@ -145,7 +146,8 @@ async def query(request: QueryRequest,
                     # 业务ID匹配或会话不存在，使用get_or_create
                     conversation = await conversation_manager.get_or_create_conversation(
                         conversation_id=request.conversation_id,
-                        business_id=request.business_id
+                        business_id=request.business_id,
+                        metadata=request.metadata
                     )
                     # 获取上下文（只获取当前会话的历史）
                     _, message_list = await conversation_manager.get_context_for_query(
@@ -156,7 +158,8 @@ async def query(request: QueryRequest,
             else:
                 # 没有提供会话ID，创建新会话
                 conversation = await conversation_manager.create_conversation(
-                    business_id=request.business_id
+                    business_id=request.business_id,
+                    metadata=request.metadata
                 )
                 # 新会话没有历史记录
                 message_list = []

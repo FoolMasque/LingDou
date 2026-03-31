@@ -515,15 +515,19 @@ class ConversationManager:
             self,
             conversation_id: Optional[str],
             business_id: str,
-            user_id: Optional[str] = None
+            user_id: Optional[str] = None,
+            metadata: Optional[Dict[str, Any]] = None
     ) -> Conversation:
         """获取或创建会话"""
         if conversation_id:
             conversation = await self.get_conversation(conversation_id)
             if conversation:
+                # 顺便检查一下：如果用户发起了新一轮 query 但又携带了新设定的 metadata，可以顺便热更新
+                if metadata:
+                    await self.update_metadata(conversation.id, metadata)
                 return conversation
 
-        return await self.create_conversation(business_id, user_id)
+        return await self.create_conversation(business_id, user_id, metadata)
 
     async def get_conversation(self, conversation_id: str) -> Optional[Conversation]:
         """获取会话"""

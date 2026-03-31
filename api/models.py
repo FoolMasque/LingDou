@@ -24,6 +24,8 @@ class QueryRequest(BaseModel):
     # history: Optional[List[ChatMessage]] = Field(None, description="历史消息")
     max_history: int = Field(5, description="最大历史消息数")
     streaming: bool = False  # True=流式, False=一次性返回
+    
+    metadata: Optional[Dict[str, Any]] = Field(None, description="新建会话时附加的初始化元数据 (例如 user_persona)")
 
 class QueryResponse(BaseModel):
     success: bool
