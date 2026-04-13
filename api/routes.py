@@ -248,7 +248,9 @@ async def _handle_blocking_query(request: QueryRequest,
             user_images=user_images_base64,
             history=history,
             mode=request.mode,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
+            only_need_context=request.only_need_context,
+            only_need_prompt=request.only_need_prompt
         )
         result = result_data["result"]
         # TODO：library_images_count目前全为空
@@ -261,7 +263,9 @@ async def _handle_blocking_query(request: QueryRequest,
             query=request.query,
             history=history,
             mode=request.mode,
-            conversation_id=conversation_id
+            conversation_id=conversation_id,
+            only_need_context=request.only_need_context,
+            only_need_prompt=request.only_need_prompt
         )
         library_images_count = 0
 

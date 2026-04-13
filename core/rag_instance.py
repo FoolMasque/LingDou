@@ -778,7 +778,9 @@ class ProductionRAGInstance:
             query: str,
             history=None,  # List[ChatMessage] = None,
             mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
-            conversation_id: str = None
+            conversation_id: str = None,
+            only_need_context: bool = False,
+            only_need_prompt: bool = False
     ) -> str:
         """带历史的查询"""
         if history is None:
@@ -822,8 +824,8 @@ class ProductionRAGInstance:
         result = await self.lightrag_instance.aquery(query=query,
                                                    param=QueryParam(conversation_history=history,
                                                                     mode=mode,
-                                                                    # only_need_context=True, # 检索的内容
-                                                                    # only_need_prompt=True, # 输入LLM的提示词
+                                                                    only_need_context=only_need_context,
+                                                                    only_need_prompt=only_need_prompt,
                                                                     user_prompt=user_prompt_with_business,
                                                                     top_k=10,  # 增加实体/关系检索数量
                                                                     chunk_top_k=10,  # 显式设置chunk检索数量

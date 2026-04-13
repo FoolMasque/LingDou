@@ -368,7 +368,7 @@ class ProductionCoreSystem:
                 item["detail_images"] = mapping.local_path
                 item["detail_images_remote"] = mapping.remote_url
 
-    async def query(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None, conversation_id: str = None) -> str:
+    async def query(self, business_id: str, query: str, mode=cast(Literal["local", "global", "hybrid", "naive", "mix", "bypass"], "hybrid"), history=None, conversation_id: str = None, only_need_context: bool = False, only_need_prompt: bool = False) -> str:
         """纯文本查询接口"""
         if history is None:
             history = field(default_factory=list)
@@ -378,7 +378,7 @@ class ProductionCoreSystem:
 
         rag = self.rag_instances[business_id]
         logger.info(f"[{business_id}] 执行查询，模式: {mode}, 历史记录数: {len(history) if history else 0}")
-        result = await rag.aquery_with_history(query=query, mode=mode, history=history, conversation_id=conversation_id)
+        result = await rag.aquery_with_history(query=query, mode=mode, history=history, conversation_id=conversation_id, only_need_context=only_need_context, only_need_prompt=only_need_prompt)
 
         return result
 

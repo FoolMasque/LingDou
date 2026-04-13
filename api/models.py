@@ -26,6 +26,10 @@ class QueryRequest(BaseModel):
     streaming: bool = False  # True=流式, False=一次性返回
     
     metadata: Optional[Dict[str, Any]] = Field(None, description="新建会话时附加的初始化元数据 (例如 user_persona)")
+    
+    # 调试/校验模式
+    only_need_context: bool = Field(False, description="是否仅返回召回的知识片段(不经过大模型)")
+    only_need_prompt: bool = Field(False, description="是否仅返回将要发送给大模型的完整提示词(包含召回片段)")
 
 class QueryResponse(BaseModel):
     success: bool
