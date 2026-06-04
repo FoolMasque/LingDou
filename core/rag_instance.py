@@ -259,6 +259,13 @@ class ProductionRAGInstance:
         def llm_func(prompt, system_prompt=None, history_messages=None, **kwargs):
             if history_messages is None:
                 history_messages = []
+                
+            # 强制关闭 qwen 的思考模式
+            if settings.provider == "qwen" and "qwen3.7-plus" in settings.llm_model.lower():
+                if "extra_body" not in kwargs:
+                    kwargs["extra_body"] = {}
+                kwargs["extra_body"]["enable_thinking"] = False
+                
             return openai_complete_if_cache(
                 model=settings.llm_model,
                 prompt=prompt,
@@ -412,6 +419,12 @@ class ProductionRAGInstance:
                 timeout=90.0
             )
 
+            # 强制关闭 qwen 的思考模式
+            if settings.provider == "qwen" and "qwen3.7-plus" in settings.vision_model.lower():
+                if "extra_body" not in kwargs:
+                    kwargs["extra_body"] = {}
+                kwargs["extra_body"]["enable_thinking"] = False
+
             try:
                 #  优先级1：VLM增强查询（messages格式）
                 if messages:
@@ -461,7 +474,8 @@ class ProductionRAGInstance:
                                     }
                                 }
                             }
-                        }
+                        },
+                        **kwargs
                     )
 
                     raw_content = response.choices[0].message.content

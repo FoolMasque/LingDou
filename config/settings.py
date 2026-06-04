@@ -165,8 +165,8 @@ class SystemConfig:
         },
         "qwen": {
             "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            "llm_model": "qwen2.5-14b-instruct",
-            "vision_model": "qwen2.5-vl-32b-instruct",
+            "llm_model": "qwen3.7-plus",
+            "vision_model": "qwen3.7-plus",
             "embedding_model": "text-embedding-v4",
             "embedding_dim": 1024,
             "max_token_size": 8192
