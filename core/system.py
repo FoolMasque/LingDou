@@ -64,7 +64,12 @@ class ProductionCoreSystem:
 
         # 1. 移除RAG实例（如果存在）
         if business_id in self.rag_instances:
-            # TODO: 实现RAG实例的清理逻辑（如果有资源占用）
+            rag = self.rag_instances[business_id]
+            if hasattr(rag, 'cleanup'):
+                try:
+                    rag.cleanup()
+                except Exception as e:
+                    logger.warning(f"清理业务 {business_id} RAG资源失败: {e}")
             del self.rag_instances[business_id]
         
         # 2. 移除处理器
