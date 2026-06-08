@@ -1172,7 +1172,7 @@ class ProductionRAGInstance:
     async def aquery_stream(self, query: str,
                             business_id: str,
                             mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
-                            history=None, ):
+                            history=None, conversation_id: str = None):
         """
         流式查询 - 纯文本
         """
@@ -1188,9 +1188,20 @@ class ProductionRAGInstance:
             core_system = Dependencies.get_core_system()
             business_config = core_system.businesses.get(self.business_id)
             
+            # 尝试提取人物设定
+            user_persona = ""
+            if conversation_id:
+                conv_mgr = Dependencies.get_conversation_manager()
+                if conv_mgr:
+                    conv = await conv_mgr.get_conversation(conversation_id)
+                    if conv and conv.metadata:
+                        user_persona = conv.metadata.get("user_persona", "")
+
             # 1. 准备 prompts
             custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
             user_prompt_text = f"回答要求：{custom_instruction}" if custom_instruction else "请用简洁自然的方式回答问题"
+            if user_persona:
+                user_prompt_text = f"【当前对话用户的背景】：{user_persona}。\n\n" + user_prompt_text
             
             final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
             
@@ -1228,7 +1239,7 @@ class ProductionRAGInstance:
                                        business_id: str,
                                        user_images: List[str] = None,
                                        mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "hybrid",
-                                       history=None):
+                                       history=None, conversation_id: str = None):
         """
         流式多模态查询
         """
@@ -1262,9 +1273,20 @@ class ProductionRAGInstance:
             
                 **要求**: 优先推荐与参考图风格、材质、设计相似的产品。"""
 
+            # 尝试提取人物设定
+            user_persona = ""
+            if conversation_id:
+                conv_mgr = Dependencies.get_conversation_manager()
+                if conv_mgr:
+                    conv = await conv_mgr.get_conversation(conversation_id)
+                    if conv and conv.metadata:
+                        user_persona = conv.metadata.get("user_persona", "")
+
             # 3. 准备 prompts
             custom_instruction = getattr(business_config, 'response_instruction', None) if business_config else None
             user_prompt_text = f"回答要求：{custom_instruction}" if custom_instruction else "请用简洁自然的方式回答问题"
+            if user_persona:
+                user_prompt_text = f"【当前对话用户的背景】：{user_persona}。\n\n" + user_prompt_text
             final_system_prompt = getattr(business_config, 'system_prompt_template', None) or config.runtime_prompt_patch.system_prompt
             
             print(f"\n{'='*20} [Stream Multimodal Prompt Debug] {'='*20}\n[System Prompt]:\n{final_system_prompt[:500]}...", flush=True)
@@ -1334,7 +1356,7 @@ class ProductionRAGInstance:
             )
 
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     yield content
 
@@ -1383,7 +1405,7 @@ class ProductionRAGInstance:
             )
 
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     # URL后处理
                     processed = post_process_response_urls(content)
@@ -1453,7 +1475,7 @@ class ProductionRAGInstance:
             )
 
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     # URL后处理
                     processed = post_process_response_urls(content)

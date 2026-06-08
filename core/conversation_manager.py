@@ -422,11 +422,11 @@ class RedisStorage(ConversationStorage):
         try:
             await self._ensure_connected()
 
-            # 确定使用哪个索引
-            if business_id:
-                index_key = f"index:business:{business_id}"
-            elif user_id:
+            # 确定使用哪个索引（优先使用 user_id，因为其基数更大、更精确）
+            if user_id:
                 index_key = f"index:user:{user_id}"
+            elif business_id:
+                index_key = f"index:business:{business_id}"
             else:
                 # 如果都没有，返回空列表
                 return []
@@ -439,6 +439,10 @@ class RedisStorage(ConversationStorage):
             for conv_id in conv_ids:
                 conv = await self.load(conv_id.decode() if isinstance(conv_id, bytes) else conv_id)
                 if conv:
+                    if business_id and conv.business_id != business_id:
+                        continue
+                    if user_id and conv.user_id != user_id:
+                        continue
                     result.append(conv)
 
             return result

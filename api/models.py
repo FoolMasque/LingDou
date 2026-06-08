@@ -25,6 +25,7 @@ class QueryRequest(BaseModel):
     max_history: int = Field(5, description="最大历史消息数")
     streaming: bool = False  # True=流式, False=一次性返回
     
+    user_id: Optional[str] = Field(None, description="用户ID，自动创建会话时关联归属")
     metadata: Optional[Dict[str, Any]] = Field(None, description="新建会话时附加的初始化元数据 (例如 user_persona)")
     
     # 调试/校验模式

@@ -138,6 +138,7 @@ async def query(request: QueryRequest,
                     logger.warning(f"会话 {request.conversation_id} 的业务ID ({existing_conv.business_id}) 与请求的业务ID ({request.business_id}) 不匹配，创建新会话")
                     conversation = await conversation_manager.create_conversation(
                         business_id=request.business_id,
+                        user_id=request.user_id,
                         metadata=request.metadata
                     )
                     # 新会话没有历史记录
@@ -147,6 +148,7 @@ async def query(request: QueryRequest,
                     conversation = await conversation_manager.get_or_create_conversation(
                         conversation_id=request.conversation_id,
                         business_id=request.business_id,
+                        user_id=request.user_id,
                         metadata=request.metadata
                     )
                     # 获取上下文（只获取当前会话的历史）
@@ -159,6 +161,7 @@ async def query(request: QueryRequest,
                 # 没有提供会话ID，创建新会话
                 conversation = await conversation_manager.create_conversation(
                     business_id=request.business_id,
+                    user_id=request.user_id,
                     metadata=request.metadata
                 )
                 # 新会话没有历史记录
@@ -342,6 +345,7 @@ async def _handle_streaming_query(request: QueryRequest,
             # 逐块发送数据
             accumulated_content = ""
             chunk_count = 0
+            saved = False
 
             async for chunk in result_stream:
                 chunk_count += 1
@@ -364,7 +368,6 @@ async def _handle_streaming_query(request: QueryRequest,
                 else:
                     # 流式内容块
                     accumulated_content += chunk
-
                     data = {
                         "type": "chunk",
                         "content": chunk,
@@ -377,19 +380,8 @@ async def _handle_streaming_query(request: QueryRequest,
                 # 小延迟，让前端有时间渲染
                 await asyncio.sleep(0.01)
 
-            try:
-                from utils.url_helper import post_process_response_urls
-                processed_content = post_process_response_urls(accumulated_content)
-                accumulated_content = processed_content
-            except Exception as e:
-                logger.warning(f"URL 替换失败: {e}")
-
-            await conversation_manager.add_message(
-                conversation_id,
-                role="assistant",
-                content=accumulated_content
-            )
             processed_time = time.time() - start_time
+            
             # 发送最终的完整内容
             final_data = {
                 "type": "complete",
@@ -408,6 +400,9 @@ async def _handle_streaming_query(request: QueryRequest,
 
             logger.info(f"流式查询完成，共耗时 {processed_time} s!")
 
+        except asyncio.CancelledError:
+            logger.warning("客户端断开连接，流式生成终止")
+            raise
         except Exception as e:
             logger.error(f"流式查询失败: {e}")
             error_data = {
@@ -416,6 +411,25 @@ async def _handle_streaming_query(request: QueryRequest,
                 "conversation_id": conversation_id
             }
             yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+        finally:
+            # 无论正常结束还是异常断开，只要生成了内容，就必须入库保存
+            if accumulated_content and not saved:
+                try:
+                    from utils.url_helper import post_process_response_urls
+                    processed_content = post_process_response_urls(accumulated_content)
+                    accumulated_content = processed_content
+                except Exception as e:
+                    logger.warning(f"URL 替换失败: {e}")
+
+                try:
+                    await conversation_manager.add_message(
+                        conversation_id,
+                        role="assistant",
+                        content=accumulated_content
+                    )
+                    saved = True
+                except Exception as e:
+                    logger.error(f"异常时保存历史消息失败: {e}")
 
     return StreamingResponse(
         generate_stream(),
