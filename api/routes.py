@@ -166,18 +166,16 @@ async def query(request: QueryRequest,
                 )
                 # 新会话没有历史记录
                 message_list = []
-        # TODO: conversation_id没传的情况
-        # else:
-        #     import uuid
-        #     request.conversation_id = str(uuid.uuid4())
-        #     message_list = []
-        #     await conversation_manager.add_message(
-        #         conversation.id,
-        #         "user",
-        #         request.query,
-        #         request.image_base64_list
-        #     )
-            # 添加用户消息
+        else:
+            # 没有提供会话ID且max_history=0，自动创建新会话以关联持久化
+            conversation = await conversation_manager.create_conversation(
+                business_id=request.business_id,
+                user_id=request.user_id,
+                metadata=request.metadata
+            )
+            message_list = []
+
+        # 添加用户消息
             await conversation_manager.add_message(
                 conversation.id,
                 "user",
