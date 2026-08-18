@@ -1,6 +1,6 @@
 {
     "provider": "qwen",
-    "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
+    "api_key": "sk-...",
     "static_base_url": "http://47.100.14.93:8008",
     "use_chinese_prompts": true,
     "rag_anything": {
@@ -37,7 +37,7 @@
         "enabled": true,
         "model": "gte-rerank-v2",
         "base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
-        "api_key": "sk-e5bab9b0d89b42759f0832de6c2ece07",
+        "api_key": "sk-...",
         "device": "cpu",
         "top_n": 10,
         "score_threshold": 0.0,
