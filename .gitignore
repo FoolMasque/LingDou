@@ -12,3 +12,11 @@ __pycache__/
 .idea/
 *.iml
 deploy.log
+/conversations/
+/examples/
+/docs/
+
+# Environment files & Secrets
+.env
+*.env
+!.env.example

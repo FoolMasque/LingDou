@@ -12,14 +12,15 @@ from typing import AsyncGenerator, Optional, List, Dict, Any, Tuple
 
 import aiohttp
 from PIL import Image
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends, Query, Header, Request
+from fastapi.responses import StreamingResponse, FileResponse
 from pathlib import Path
 
 from config.settings import settings
 from api.models import ProcessRequest, QueryRequest, QueryResponse
 from core.image_processor import ImageProcessor  # 抽取图片处理逻辑
 from core.conversation_manager import ConversationManager, StorageBackend
+from core.stream_manager import StreamManager, StreamStatus
 from api.models import ChatMessage, ConversationCreate, ConversationListRequest, BusinessConfigUpdate
 from core.components import BusinessConfig
 from utils.logger import setup_logger
@@ -111,6 +112,14 @@ async def query(request: QueryRequest,
     """
     start_time = time.time()
     try:
+        # 入参边界校验
+        query_str = (request.query or "").strip()
+        if not query_str:
+            raise HTTPException(status_code=400, detail="查询内容不能为空")
+        if len(query_str) > 2000:
+            raise HTTPException(status_code=400, detail="查询长度不能超过2000字")
+        request.query = query_str
+
         # 确保业务存在，不存在则自动创建
         if request.business_id not in core_system.rag_instances:
             logger.info(f"检测到新业务ID: {request.business_id}，自动创建默认配置...")
@@ -254,7 +263,6 @@ async def _handle_blocking_query(request: QueryRequest,
             only_need_prompt=request.only_need_prompt
         )
         result = result_data["result"]
-        # TODO：library_images_count目前全为空
         library_images_count = result_data.get("library_images_count", 0)
     else:
         # 纯文本查询
@@ -300,142 +308,66 @@ async def _handle_streaming_query(request: QueryRequest,
                                   history: list
                                   ):
     """
-    处理流式查询（实时返回生成内容）
+    处理流式查询（借助 StreamManager 实现后台解耦与流式断连续推）
 
     调用链路：
-    routes.query() → core_system.query_stream/query_multimodal_stream()
-                  → rag.aquery_stream/aquery_multimodal_stream()
-                  → LightRAG + VLM (stream=True)
+    routes.query() → StreamManager.create_session() 
+                  → StreamManager.start_background_generation()
+                  → StreamingResponse(StreamManager.subscribe_stream())
     """
+    stream_manager = StreamManager()
 
-    async def generate_stream():
-        """生成SSE流"""
-        try:
-            start_time = time.time()
-            image_processor = Dependencies.get_image_processor()
-            user_images_base64 = await image_processor.process_user_images(
-                image_urls=request.image_urls,
-                image_base64_list=request.image_base64_list
-            )
+    # 处理图片
+    image_processor = Dependencies.get_image_processor()
+    user_images_base64 = await image_processor.process_user_images(
+        image_urls=request.image_urls,
+        image_base64_list=request.image_base64_list
+    )
 
-            if user_images_base64:
-                # 多模态流式查询
-                logger.info(f"执行流式多模态查询: 用户图片 {len(user_images_base64)} 张")
-                result_stream = core_system.query_multimodal_stream(
-                    business_id=request.business_id,
-                    query=request.query,
-                    user_images=user_images_base64,
-                    history=history,
-                    mode=request.mode,
-                    conversation_id=conversation_id
-                )
-            else:
-                # 纯文本流式查询
-                logger.info("执行流式纯文本查询")
-                result_stream = core_system.query_stream(
-                    business_id=request.business_id,
-                    query=request.query,
-                    history=history,
-                    mode=request.mode,
-                    conversation_id=conversation_id
-                )
+    if user_images_base64:
+        logger.info(f"执行流式多模态查询: 用户图片 {len(user_images_base64)} 张")
+        result_stream = core_system.query_multimodal_stream(
+            business_id=request.business_id,
+            query=request.query,
+            user_images=user_images_base64,
+            history=history,
+            mode=request.mode,
+            conversation_id=conversation_id
+        )
+    else:
+        logger.info("执行流式纯文本查询")
+        result_stream = core_system.query_stream(
+            business_id=request.business_id,
+            query=request.query,
+            history=history,
+            mode=request.mode,
+            conversation_id=conversation_id
+        )
 
-            # 逐块发送数据
-            accumulated_content = ""
-            chunk_count = 0
-            saved = False
+    # 创建流式 Session
+    session = stream_manager.create_session(
+        conversation_id=conversation_id,
+        business_id=request.business_id
+    )
 
-            async for chunk in result_stream:
-                chunk_count += 1
+    # 在后台启动生成任务（即使前端断开连接也不被取消）
+    await stream_manager.start_background_generation(
+        session=session,
+        result_stream=result_stream,
+        conversation_manager=conversation_manager,
+        user_images_count=len(user_images_base64)
+    )
 
-                if isinstance(chunk, dict):
-                    # 完整消息（带元数据）
-                    accumulated_content = chunk.get("content", "")
-
-                    data = {
-                        "type": "complete",
-                        "content": accumulated_content,
-                        "conversation_id": conversation_id,
-                        "metadata": {
-                            "user_images_count": len(user_images_base64), # chunk.get("user_images_count", 0),
-                            "library_images_count": chunk.get("library_images_count", 0),
-                            "processing_time": time.time() - start_time,
-                            "chunk_count": chunk_count
-                        }
-                    }
-                else:
-                    # 流式内容块
-                    accumulated_content += chunk
-                    data = {
-                        "type": "chunk",
-                        "content": chunk,
-                        "accumulated": accumulated_content,
-                    }
-
-                # 发送SSE格式数据
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-                # 小延迟，让前端有时间渲染
-                await asyncio.sleep(0.01)
-
-            processed_time = time.time() - start_time
-            
-            # 发送最终的完整内容
-            final_data = {
-                "type": "complete",
-                "content": accumulated_content,
-                "conversation_id": conversation_id,
-                "metadata": {
-                            "user_images_count": len(user_images_base64), # chunk.get("user_images_count", 0),
-                            "library_images_count": 0,
-                            "processing_time": processed_time,
-                            "chunk_count": chunk_count
-                        }
-            }
-            # 发送完成信号
-            yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-
-            logger.info(f"流式查询完成，共耗时 {processed_time} s!")
-
-        except asyncio.CancelledError:
-            logger.warning("客户端断开连接，流式生成终止")
-            raise
-        except Exception as e:
-            logger.error(f"流式查询失败: {e}")
-            error_data = {
-                "type": "error",
-                "error": str(e),
-                "conversation_id": conversation_id
-            }
-            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
-        finally:
-            # 无论正常结束还是异常断开，只要生成了内容，就必须入库保存
-            if accumulated_content and not saved:
-                try:
-                    from utils.url_helper import post_process_response_urls
-                    processed_content = post_process_response_urls(accumulated_content)
-                    accumulated_content = processed_content
-                except Exception as e:
-                    logger.warning(f"URL 替换失败: {e}")
-
-                try:
-                    await conversation_manager.add_message(
-                        conversation_id,
-                        role="assistant",
-                        content=accumulated_content
-                    )
-                    saved = True
-                except Exception as e:
-                    logger.error(f"异常时保存历史消息失败: {e}")
-
+    # 返回 SSE 订阅流
     return StreamingResponse(
-        generate_stream(),
+        stream_manager.subscribe_stream(session.stream_id, last_event_id=0),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            "X-Stream-ID": session.stream_id,
+            "X-Conversation-ID": conversation_id
         }
     )
 
@@ -932,8 +864,7 @@ async def upload_document(
         if not rag_instance.rag_anything:
             raise HTTPException(400, "RAGAnything 未启用，请检查配置")
 
-        # 5. 处理文档
-        # TODO: 异步处理
+        # 5. 处理文档（异步解析与图谱构建）
         result = await rag_instance.insert_document(
             file_path=str(temp_file),
             doc_type=doc_type,

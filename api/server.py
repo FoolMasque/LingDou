@@ -94,12 +94,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"业务注册失败: {e}")
 
-    logger.info("=== 系统启动完成 ===")
+    # 启动后台定期清理任务
+    cleanup_task = asyncio.create_task(periodic_cleanup())
+    logger.info("=== 系统启动完成，定时清理任务已挂载 ===")
 
     yield
 
     # 清理资源
     logger.info("系统关闭中...")
+    if cleanup_task:
+        cleanup_task.cancel()
+        logger.info("后台定时清理任务已取消")
+
     if core_system:
         for business_id, rag in core_system.rag_instances.items():
             try:
@@ -126,16 +132,25 @@ def get_storage_config():
 # ==================== 定期任务 ====================
 
 async def periodic_cleanup():
-    """定期清理任务"""
+    """定期清理任务（包括历史会话数据库与内存流Session）"""
     while True:
         try:
-            # 每天凌晨2点执行清理
-            await asyncio.sleep(24 * 3600)  # 等待24小时
+            # 每小时扫描一次
+            await asyncio.sleep(3600)  # 每 1 小时轮询
 
             if Dependencies.conversation_manager:
-                # 清理7天前的会话
+                # 清理7天前的历史数据库会话
                 count = await Dependencies.conversation_manager.cleanup_old_conversations(days=7)
-                logger.info(f"定期清理完成，删除了 {count} 个旧会话")
+                if count > 0:
+                    logger.info(f"定期清理完成，删除了 {count} 个旧数据库会话")
+
+            # 主动清理内存中过期的 StreamSession
+            from core.stream_manager import StreamManager
+            stream_manager = StreamManager()
+            cleaned = stream_manager.cleanup_expired_sessions()
+            if cleaned > 0:
+                logger.info(f"定期清理完成，扫除 {cleaned} 个过期内存 StreamSession")
+
         except Exception as e:
             logger.error(f"定期清理失败: {e}")
             await asyncio.sleep(3600)  # 出错后等待1小时再试

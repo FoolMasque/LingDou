@@ -256,7 +256,8 @@ async def fetch_wechat_order_tracking(app_id: str, order_id: str) -> Tuple[Optio
     async with httpx.AsyncClient() as client:
         try:
             # 1. Get Token (Dynamic Store App ID)
-            token_url = f"http://47.100.14.93/backend//lingdou/wx_store/{app_id}/token?secret=1024%40Yinyu"
+            secret = os.getenv("WECHAT_STORE_SECRET", "1024%40Yinyu")
+            token_url = f"http://47.100.14.93/backend//lingdou/wx_store/{app_id}/token?secret={secret}"
             token_resp = await client.get(token_url, timeout=10.0)
             token_resp.raise_for_status()
             token_data = token_resp.json()
@@ -316,8 +317,8 @@ async def fetch_wechat_order_tracking(app_id: str, order_id: str) -> Tuple[Optio
 
 async def fetch_logistics_info(tracking_number: str, com: str = "yuantong") -> dict:
     """Fetch real logistics data from kuaidi100 API."""
-    key = 'EbZqPMOG1512'  # 客户授权key
-    customer = '7E82DA37D3BF142CABAA0F1FEEBB0374'  # 查询公司编号
+    key = os.getenv("KUAIDI100_KEY", "EbZqPMOG1512")  # 客户授权 key
+    customer = os.getenv("KUAIDI100_CUSTOMER", "7E82DA37D3BF142CABAA0F1FEEBB0374")  # 查询公司编号
     url = 'https://poll.kuaidi100.com/poll/query.do'
     
     param = {
@@ -480,7 +481,7 @@ async def wechat_shop_webhook(business_id: str, app_id: str, request: WeChatWebh
                 # user_lines[-1] 是当前刚发送的订单号，user_lines[-2] 是上一轮真正发牢骚的话
                 actual_complaint = user_lines[-2]
                 
-        # TODO: 使用 LLM 智能归纳的诉求
+        # TODO: 转人工时，使用 LLM 智能归纳的诉求给人工看的
         # actual_complaint = intent_res.complaint_summary if intent_res.complaint_summary else actual_complaint
         
         actual_complaint_short = actual_complaint[:50]

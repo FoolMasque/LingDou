@@ -901,7 +901,7 @@ class ProductionRAGInstance:
             query_param = QueryParam(mode=mode, only_need_prompt=True)
             raw_prompt = await self.lightrag_instance.aquery(enhanced_query, param=query_param)
 
-            # 步骤4: 提取并编码库中图片 TODO：可能没有
+            # 步骤4: 提取并编码库中图片（若没有找到图片则返回空列表）
             enhanced_prompt, library_images = await self._extract_images_from_prompt(raw_prompt)
 
             logger.info(f"检索到 {len(library_images)} 张产品图片")
@@ -1307,7 +1307,6 @@ class ProductionRAGInstance:
 
             # 6. 流式VLM分析 / LLM
             if user_images or library_images:
-                # TODO: Check if _vlm_analyze_all_images_stream needs prompt update
                 async for chunk in self._vlm_analyze_all_images_stream(
                         prompt=enhanced_prompt,
                         query=query,
